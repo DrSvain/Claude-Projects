@@ -1,14 +1,13 @@
 {
-  "DefaultBackupPath": "",
-  "LogDirectory": "",
-  "LogLevel": "INFO",
-  "MaxRetries": 3,
-  "RetryDelaySeconds": 2,
-  "IncludeAssignments": true,
-  "ComputeChecksums": true,
-  "GraphApiVersion": "v1.0",
-  "PageSize": 100,
-  "ConfirmModuleInstall": true,
+  "BackupRootPath": "",
+  "WriteChecksums": false,
   "ConfirmRestore": true,
-  "ModuleInstallScope": "CurrentUser"
+  "ExportAssignments": true,
+  "LogLevel": "INFO",
+  "LogToFile": true,
+  "MaxRetries": 3,
+  "BaseDelaySeconds": 2,
+  "PageSize": 100,
+  "ConfirmDisconnect": true,
+  "ShowDebugInUI": false
 }
