@@ -1,0 +1,14 @@
+{
+  "DefaultBackupPath": "",
+  "LogDirectory": "",
+  "LogLevel": "INFO",
+  "MaxRetries": 3,
+  "RetryDelaySeconds": 2,
+  "IncludeAssignments": true,
+  "ComputeChecksums": true,
+  "GraphApiVersion": "v1.0",
+  "PageSize": 100,
+  "ConfirmModuleInstall": true,
+  "ConfirmRestore": true,
+  "ModuleInstallScope": "CurrentUser"
+}
