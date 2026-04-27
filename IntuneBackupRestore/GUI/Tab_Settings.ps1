@@ -14,57 +14,46 @@ function Initialize-TabSettings {
     $Tab.Text    = 'Settings'
     $Tab.Padding = [System.Windows.Forms.Padding]::new(12)
 
-    # Scrollable container so the tab works on small screens
     $scroll = [System.Windows.Forms.Panel]::new()
     $scroll.Dock          = 'Fill'
     $scroll.AutoScroll    = $true
     $Tab.Controls.Add($scroll)
 
-    $yPos = 8   # running vertical cursor
+    $yPos = 8
 
-    # ────────────────────────────────────────────────────────────────────────
-    # SECTION: Backup
-    # ────────────────────────────────────────────────────────────────────────
+    # ── Backup ───────────────────────────────────────────────────────────────
     $grpBackup = New-SettingsGroup -Parent $scroll -Text 'Backup' -Y $yPos -Height 120
     $yPos += 128
 
-    # Backup root path
     Add-FieldLabel -Parent $grpBackup -Text 'Backup Root Path:' -Y 22
     $txtBackupPath = [System.Windows.Forms.TextBox]::new()
-    $txtBackupPath.Location  = [System.Drawing.Point]::new(160, 20)
-    $txtBackupPath.Width     = 420
+    $txtBackupPath.Location = [System.Drawing.Point]::new(160, 20)
+    $txtBackupPath.Width    = 420
     $grpBackup.Controls.Add($txtBackupPath)
 
     $btnPickPath = New-SettingsButton -Text 'Browse...' -X 586 -Y 19 -Width 80
     $grpBackup.Controls.Add($btnPickPath)
 
-    # Checksum option
     $chkChecksum = New-SettingsCheck -Text 'Write SHA-256 checksums alongside backup files' -X 160 -Y 52
     $grpBackup.Controls.Add($chkChecksum)
 
-    # Confirm before overwrite
     $chkConfirmRestore = New-SettingsCheck -Text 'Show confirmation dialog before each restore operation' -X 160 -Y 76
     $grpBackup.Controls.Add($chkConfirmRestore)
 
-    # Include assignments
     $chkExportAssignments = New-SettingsCheck -Text 'Export assignments (documentation only, never restored)' -X 160 -Y 100
     $grpBackup.Controls.Add($chkExportAssignments)
 
     $btnPickPath.Add_Click({
         $dlg = [System.Windows.Forms.FolderBrowserDialog]::new()
-        $dlg.Description       = 'Select backup root folder'
+        $dlg.Description         = 'Select backup root folder'
         $dlg.ShowNewFolderButton = $true
         if ($txtBackupPath.Text -and (Test-Path $txtBackupPath.Text)) {
             $dlg.SelectedPath = $txtBackupPath.Text
         }
-        if ($dlg.ShowDialog() -eq 'OK') {
-            $txtBackupPath.Text = $dlg.SelectedPath
-        }
+        if ($dlg.ShowDialog() -eq 'OK') { $txtBackupPath.Text = $dlg.SelectedPath }
     })
 
-    # ────────────────────────────────────────────────────────────────────────
-    # SECTION: Logging
-    # ────────────────────────────────────────────────────────────────────────
+    # ── Logging ──────────────────────────────────────────────────────────────
     $grpLog = New-SettingsGroup -Parent $scroll -Text 'Logging' -Y $yPos -Height 78
     $yPos += 86
 
@@ -74,15 +63,13 @@ function Initialize-TabSettings {
     $cmbLogLevel.Width         = 120
     $cmbLogLevel.DropDownStyle = 'DropDownList'
     $cmbLogLevel.Items.AddRange([string[]]@('DEBUG', 'INFO', 'WARN', 'ERROR'))
-    $cmbLogLevel.SelectedIndex = 1  # INFO default
+    $cmbLogLevel.SelectedIndex = 1
     $grpLog.Controls.Add($cmbLogLevel)
 
     $chkLogToFile = New-SettingsCheck -Text 'Also write log to file in backup folder' -X 160 -Y 50
     $grpLog.Controls.Add($chkLogToFile)
 
-    # ────────────────────────────────────────────────────────────────────────
-    # SECTION: Graph / Retry
-    # ────────────────────────────────────────────────────────────────────────
+    # ── Graph / Retry ────────────────────────────────────────────────────────
     $grpRetry = New-SettingsGroup -Parent $scroll -Text 'Graph API / Retry' -Y $yPos -Height 102
     $yPos += 110
 
@@ -99,11 +86,9 @@ function Initialize-TabSettings {
     Add-FieldLabel -Parent $grpRetry -Text 'Page Size:' -Y 78
     $numPageSize = New-NumericUpDown -X 160 -Y 75 -Min 10 -Max 999 -Value 100
     $grpRetry.Controls.Add($numPageSize)
-    Add-FieldLabel -Parent $grpRetry -Text '(\$top per Graph request)' -Y 78 -X 230 -Width 180 -Color Gray
+    Add-FieldLabel -Parent $grpRetry -Text '($top per Graph request)' -Y 78 -X 230 -Width 180 -Color Gray
 
-    # ────────────────────────────────────────────────────────────────────────
-    # SECTION: UI Behaviour
-    # ────────────────────────────────────────────────────────────────────────
+    # ── UI Behaviour ─────────────────────────────────────────────────────────
     $grpUI = New-SettingsGroup -Parent $scroll -Text 'UI Behaviour' -Y $yPos -Height 78
     $yPos += 86
 
@@ -113,9 +98,7 @@ function Initialize-TabSettings {
     $chkShowDebug = New-SettingsCheck -Text 'Show DEBUG messages in Log tab' -X 160 -Y 46
     $grpUI.Controls.Add($chkShowDebug)
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Config file path display
-    # ────────────────────────────────────────────────────────────────────────
+    # ── Config path label ────────────────────────────────────────────────────
     $lblConfigPath = [System.Windows.Forms.Label]::new()
     $lblConfigPath.Location  = [System.Drawing.Point]::new(0, $yPos)
     $lblConfigPath.Size      = [System.Drawing.Size]::new(760, 18)
@@ -125,9 +108,7 @@ function Initialize-TabSettings {
     $scroll.Controls.Add($lblConfigPath)
     $yPos += 24
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Action buttons
-    # ────────────────────────────────────────────────────────────────────────
+    # ── Action buttons ───────────────────────────────────────────────────────
     $btnSave = [System.Windows.Forms.Button]::new()
     $btnSave.Text      = 'Save Settings'
     $btnSave.Location  = [System.Drawing.Point]::new(0, $yPos)
@@ -158,30 +139,36 @@ function Initialize-TabSettings {
         $cfg = $GlobalState['Config']
         if ($null -eq $cfg) { return }
 
-        $txtBackupPath.Text         = $cfg['BackupRootPath']       ?? ''
-        $chkChecksum.Checked        = [bool]($cfg['WriteChecksums']   ?? $false)
-        $chkConfirmRestore.Checked  = [bool]($cfg['ConfirmRestore']   ?? $true)
-        $chkExportAssignments.Checked = [bool]($cfg['ExportAssignments'] ?? $true)
+        $txtBackupPath.Text           = if ($cfg['BackupRootPath']) { $cfg['BackupRootPath'] } else { '' }
+        $chkChecksum.Checked          = [bool]($cfg['WriteChecksums']    -eq $true)
+        $chkConfirmRestore.Checked    = ($cfg['ConfirmRestore']    -ne $false)
+        $chkExportAssignments.Checked = ($cfg['ExportAssignments'] -ne $false)
 
-        $logLevel = $cfg['LogLevel'] ?? 'INFO'
+        $logLevel = if ($cfg['LogLevel']) { $cfg['LogLevel'] } else { 'INFO' }
         $li = $cmbLogLevel.Items.IndexOf($logLevel)
         if ($li -ge 0) { $cmbLogLevel.SelectedIndex = $li }
 
-        $chkLogToFile.Checked         = [bool]($cfg['LogToFile']            ?? $true)
-        $numMaxRetries.Value           = [Math]::Max(0, [Math]::Min(10, [int]($cfg['MaxRetries']   ?? 3)))
-        $numBaseDelay.Value            = [Math]::Max(1, [Math]::Min(60, [int]($cfg['BaseDelaySeconds'] ?? 2)))
-        $numPageSize.Value             = [Math]::Max(10,[Math]::Min(999,[int]($cfg['PageSize']     ?? 100))))
-        $chkConfirmDisconnect.Checked  = [bool]($cfg['ConfirmDisconnect']   ?? $true)
-        $chkShowDebug.Checked          = [bool]($cfg['ShowDebugInUI']       ?? $false)
+        $chkLogToFile.Checked         = ($cfg['LogToFile'] -ne $false)
 
-        $cfgFile = $GlobalState['ConfigFile'] ?? ''
+        $maxR = if ($cfg['MaxRetries'])        { [int]$cfg['MaxRetries'] }        else { 3 }
+        $baseD = if ($cfg['BaseDelaySeconds']) { [int]$cfg['BaseDelaySeconds'] }  else { 2 }
+        $pgSz = if ($cfg['PageSize'])          { [int]$cfg['PageSize'] }          else { 100 }
+
+        $numMaxRetries.Value = [Math]::Max(0,  [Math]::Min(10,  $maxR))
+        $numBaseDelay.Value  = [Math]::Max(1,  [Math]::Min(60,  $baseD))
+        $numPageSize.Value   = [Math]::Max(10, [Math]::Min(999, $pgSz))
+
+        $chkConfirmDisconnect.Checked = ($cfg['ConfirmDisconnect'] -ne $false)
+        $chkShowDebug.Checked         = [bool]($cfg['ShowDebugInUI'] -eq $true)
+
+        $cfgFile = if ($GlobalState['ConfigFile']) { $GlobalState['ConfigFile'] } else { '' }
         $lblConfigPath.Text = if ($cfgFile) { "Config: $cfgFile" } else { '' }
     }
 
     Load-SettingsFromConfig
 
     # ════════════════════════════════════════════════════════════════════════
-    # Save button
+    # Save
     # ════════════════════════════════════════════════════════════════════════
     $btnSave.Add_Click({
         $lblSaveStatus.Text      = ''
@@ -193,30 +180,27 @@ function Initialize-TabSettings {
                 New-Item -ItemType Directory -Path $pathVal -Force | Out-Null
             } catch {
                 [System.Windows.Forms.MessageBox]::Show(
-                    "Cannot create backup folder:`n$_",
-                    'Settings Error',
+                    "Cannot create backup folder:`n$_", 'Settings Error',
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
                 return
             }
         }
 
-        # Build updated config object
         $newCfg = @{
-            BackupRootPath       = $pathVal
-            WriteChecksums       = $chkChecksum.Checked
-            ConfirmRestore       = $chkConfirmRestore.Checked
-            ExportAssignments    = $chkExportAssignments.Checked
-            LogLevel             = $cmbLogLevel.SelectedItem.ToString()
-            LogToFile            = $chkLogToFile.Checked
-            MaxRetries           = [int]$numMaxRetries.Value
-            BaseDelaySeconds     = [int]$numBaseDelay.Value
-            PageSize             = [int]$numPageSize.Value
-            ConfirmDisconnect    = $chkConfirmDisconnect.Checked
-            ShowDebugInUI        = $chkShowDebug.Checked
+            BackupRootPath    = $pathVal
+            WriteChecksums    = $chkChecksum.Checked
+            ConfirmRestore    = $chkConfirmRestore.Checked
+            ExportAssignments = $chkExportAssignments.Checked
+            LogLevel          = $cmbLogLevel.SelectedItem.ToString()
+            LogToFile         = $chkLogToFile.Checked
+            MaxRetries        = [int]$numMaxRetries.Value
+            BaseDelaySeconds  = [int]$numBaseDelay.Value
+            PageSize          = [int]$numPageSize.Value
+            ConfirmDisconnect = $chkConfirmDisconnect.Checked
+            ShowDebugInUI     = $chkShowDebug.Checked
         }
 
-        # Merge into GlobalState config (preserve any extra keys from original file)
         $cfg = $GlobalState['Config']
         if ($null -ne $cfg) {
             foreach ($k in $newCfg.Keys) { $cfg[$k] = $newCfg[$k] }
@@ -225,7 +209,6 @@ function Initialize-TabSettings {
             $cfg = $newCfg
         }
 
-        # Persist to disk
         $cfgFile = $GlobalState['ConfigFile']
         if ($cfgFile) {
             try {
@@ -236,23 +219,21 @@ function Initialize-TabSettings {
                 $lblSaveStatus.ForeColor = [System.Drawing.Color]::DarkRed
             }
         } else {
-            $lblSaveStatus.Text = 'Settings applied (no config file path — not persisted to disk).'
+            $lblSaveStatus.Text      = 'Applied (no config file — not persisted).'
             $lblSaveStatus.ForeColor = [System.Drawing.Color]::DarkOrange
         }
 
-        # Propagate log level immediately
         if ($GlobalState['LoggingInitialized']) {
-            Set-LogLevel -Level $cfg['LogLevel']
+            try { Set-LogLevel -Level $cfg['LogLevel'] } catch {}
         }
     })
 
     # ════════════════════════════════════════════════════════════════════════
-    # Reset button — reloads defaults from AppConfig.json
+    # Reset
     # ════════════════════════════════════════════════════════════════════════
     $btnReset.Add_Click({
         $dlg = [System.Windows.Forms.MessageBox]::Show(
-            'Reset all settings to application defaults?',
-            'Confirm Reset',
+            'Reset all settings to application defaults?', 'Confirm Reset',
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Question)
         if ($dlg -ne 'Yes') { return }
@@ -275,11 +256,10 @@ function Initialize-TabSettings {
         }
     })
 
-    # Expose reload function so Main.ps1 can call it after initial config load
     $UIRefs.ReloadSettingsTab = { Load-SettingsFromConfig }
 }
 
-# ── Layout helpers ───────────────────────────────────────────────────────────────────
+# ── Layout helpers ────────────────────────────────────────────────────────────
 function New-SettingsGroup {
     param([System.Windows.Forms.Control]$Parent, [string]$Text, [int]$Y, [int]$Height)
     $gb = [System.Windows.Forms.GroupBox]::new()

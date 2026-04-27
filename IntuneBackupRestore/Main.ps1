@@ -2,40 +2,32 @@
 <#
 .SYNOPSIS
     Intune Backup & Restore Tool — entry point.
-.DESCRIPTION
-    Checks prerequisites, loads configuration, initialises logging and
-    global state, then launches the WinForms GUI on the current thread.
-    Must be run on Windows with PowerShell 7.0 or newer.
 .EXAMPLE
     pwsh -File Main.ps1
     pwsh -File Main.ps1 -ConfigFile 'D:\MyConfig\AppConfig.json'
 #>
 [CmdletBinding()]
 param(
-    # Override the default Config\AppConfig.json location
     [string]$ConfigFile = ''
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ════════════════════════════════════════════════════════════════════════
 # 1. Platform / version guard
 # ════════════════════════════════════════════════════════════════════════
 if (-not $IsWindows) {
-    Write-Error 'This tool requires Windows. WinForms is not available on Linux/macOS.'
+    Write-Host 'ERROR: This tool requires Windows.' -ForegroundColor Red
     exit 1
 }
 
-if ($PSVersionTable.PSVersion -lt [version]'7.0') {
-    Write-Error "PowerShell 7.0 or newer is required. Current version: $($PSVersionTable.PSVersion)"
-    exit 1
-}
+Write-Host "[Startup] PowerShell $($PSVersionTable.PSVersion) on $([System.Environment]::OSVersion.VersionString)" -ForegroundColor Cyan
 
 # ════════════════════════════════════════════════════════════════════════
 # 2. Paths
 # ════════════════════════════════════════════════════════════════════════
-$AppRoot = $PSScriptRoot   # folder containing Main.ps1
+$AppRoot = $PSScriptRoot
+Write-Host "[Startup] AppRoot: $AppRoot" -ForegroundColor Cyan
 
 if (-not $ConfigFile) {
     $ConfigFile = Join-Path $AppRoot 'Config\AppConfig.json'
@@ -48,25 +40,26 @@ $Config = @{}
 if (Test-Path $ConfigFile) {
     try {
         $Config = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        Write-Host "[Startup] Config loaded: $ConfigFile" -ForegroundColor Cyan
     } catch {
-        Write-Warning "Failed to parse config file '$ConfigFile': $_"
-        Write-Warning 'Using built-in defaults.'
+        Write-Host "[Startup] WARNING: Could not parse config: $_" -ForegroundColor Yellow
     }
+} else {
+    Write-Host "[Startup] Config file not found, using defaults: $ConfigFile" -ForegroundColor Yellow
 }
 
-# Apply defaults for any missing keys
 $defaults = @{
-    BackupRootPath       = [System.IO.Path]::Combine($env:USERPROFILE, 'IntuneBackups')
-    WriteChecksums       = $false
-    ConfirmRestore       = $true
-    ExportAssignments    = $true
-    LogLevel             = 'INFO'
-    LogToFile            = $true
-    MaxRetries           = 3
-    BaseDelaySeconds     = 2
-    PageSize             = 100
-    ConfirmDisconnect    = $true
-    ShowDebugInUI        = $false
+    BackupRootPath    = [System.IO.Path]::Combine($env:USERPROFILE, 'IntuneBackups')
+    WriteChecksums    = $false
+    ConfirmRestore    = $true
+    ExportAssignments = $true
+    LogLevel          = 'INFO'
+    LogToFile         = $true
+    MaxRetries        = 3
+    BaseDelaySeconds  = 2
+    PageSize          = 100
+    ConfirmDisconnect = $true
+    ShowDebugInUI     = $false
 }
 foreach ($key in $defaults.Keys) {
     if (-not $Config.ContainsKey($key)) { $Config[$key] = $defaults[$key] }
@@ -89,45 +82,51 @@ $moduleOrder = @(
     'Modules\RestoreEngine.psm1'
 )
 
+Write-Host '[Startup] Loading modules...' -ForegroundColor Cyan
 foreach ($rel in $moduleOrder) {
     $full = Join-Path $AppRoot $rel
     if (-not (Test-Path $full)) {
-        Write-Error "Required module not found: $full"
+        Write-Host "ERROR: Module not found: $full" -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
         exit 1
     }
-    Import-Module $full -Force -DisableNameChecking
+    try {
+        Import-Module $full -Force -DisableNameChecking
+        Write-Host "  OK  $rel" -ForegroundColor Green
+    } catch {
+        Write-Host "ERROR loading $rel : $_" -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
+        exit 1
+    }
 }
 
 # ════════════════════════════════════════════════════════════════════════
 # 5. Initialise logging
 # ════════════════════════════════════════════════════════════════════════
-# ConcurrentQueue shared between UI thread and background runspaces
 $LogQueue = [System.Collections.Concurrent.ConcurrentQueue[hashtable]]::new()
-
-Initialize-Logging -Level $Config['LogLevel'] -LogQueue $LogQueue
+try {
+    Initialize-Logging -Level $Config['LogLevel'] -LogQueue $LogQueue
+    Write-Host '[Startup] Logging initialised.' -ForegroundColor Cyan
+} catch {
+    Write-Host "ERROR initialising logging: $_" -ForegroundColor Red
+    Read-Host 'Press Enter to exit'
+    exit 1
+}
 
 # ════════════════════════════════════════════════════════════════════════
-# 6. Global state — synchronized hashtable visible to all runspaces
+# 6. Global state
 # ════════════════════════════════════════════════════════════════════════
 $GlobalState = [System.Collections.Hashtable]::Synchronized(@{
-    # Infrastructure
     AppRoot            = $AppRoot
     Config             = $Config
     ConfigFile         = $ConfigFile
     LogQueue           = $LogQueue
     LoggingInitialized = $true
-
-    # Connection
     Connected          = $false
     TenantId           = ''
     TenantName         = ''
     UserPrincipalName  = ''
     AccountId          = ''
-
-    # Operation flags  (key pattern: OperationRunning_{Key})
-    # Populated dynamically by Start-BackgroundOperation in MainForm.ps1
-
-    # Shared results written by background runspaces
     BackupResult       = $null
     RestoreResult      = $null
     ConflictResult     = $null
@@ -136,14 +135,23 @@ $GlobalState = [System.Collections.Hashtable]::Synchronized(@{
 })
 
 # ════════════════════════════════════════════════════════════════════════
-# 7. Launch GUI
+# 7. Load WinForms assemblies
 # ════════════════════════════════════════════════════════════════════════
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
-[System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
+    Write-Host '[Startup] WinForms ready.' -ForegroundColor Cyan
+} catch {
+    Write-Host "ERROR loading WinForms: $_" -ForegroundColor Red
+    Read-Host 'Press Enter to exit'
+    exit 1
+}
 
-# Dot-source the GUI files (they define functions, not run code at parse time)
+# ════════════════════════════════════════════════════════════════════════
+# 8. Dot-source GUI files
+# ════════════════════════════════════════════════════════════════════════
 $guiFiles = @(
     'GUI\MainForm.ps1'
     'GUI\Tab_Connection.ps1'
@@ -154,27 +162,36 @@ $guiFiles = @(
     'GUI\Tab_Settings.ps1'
 )
 
+Write-Host '[Startup] Loading GUI files...' -ForegroundColor Cyan
 foreach ($rel in $guiFiles) {
     $full = Join-Path $AppRoot $rel
     if (-not (Test-Path $full)) {
-        Write-Error "Required GUI file not found: $full"
+        Write-Host "ERROR: GUI file not found: $full" -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
         exit 1
     }
-    . $full
+    try {
+        . $full
+        Write-Host "  OK  $rel" -ForegroundColor Green
+    } catch {
+        Write-Host "ERROR loading GUI file $rel : $_" -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
+        exit 1
+    }
 }
 
-# Write-LogMessage is available after Initialize-Logging
-Write-LogMessage -Level 'INFO' -Message 'Intune Backup & Restore Tool starting.'
-Write-LogMessage -Level 'INFO' -Message "PowerShell $($PSVersionTable.PSVersion)  |  AppRoot: $AppRoot"
-Write-LogMessage -Level 'INFO' -Message "Config: $ConfigFile"
+Write-Host '[Startup] Launching GUI...' -ForegroundColor Green
 
-# Start-MainForm runs [Application]::Run() — blocks until the window closes
+# ════════════════════════════════════════════════════════════════════════
+# 9. Run
+# ════════════════════════════════════════════════════════════════════════
 try {
     Start-MainForm -GlobalState $GlobalState
+} catch {
+    Write-Host "FATAL ERROR in GUI: $_" -ForegroundColor Red
+    Write-Host $_.ScriptStackTrace -ForegroundColor Red
+    Read-Host 'Press Enter to exit'
 } finally {
-    Write-LogMessage -Level 'INFO' -Message 'Application closed.'
-
-    # Flush any remaining log entries to file if configured
     if ($Config['LogToFile']) {
         try { Export-LogToFile -GlobalState $GlobalState } catch {}
     }
