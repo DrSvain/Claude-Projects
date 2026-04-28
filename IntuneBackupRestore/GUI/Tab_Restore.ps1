@@ -15,12 +15,26 @@ function Initialize-TabRestore {
     $Tab.Padding = [System.Windows.Forms.Padding]::new(10)
 
     # ── outer split: left panel | right log panel ────────────────────────────
+    # NOTE: SplitterDistance / Panel*MinSize must satisfy
+    #   Panel1MinSize + Panel2MinSize <= Width
+    # When the SplitContainer is first created its Width is tiny (the parent
+    # TabPage hasn't been added to a TabControl yet), so we defer the final
+    # values to HandleCreated, which fires after layout when Width is real.
     $split = [System.Windows.Forms.SplitContainer]::new()
-    $split.Dock        = 'Fill'
-    $split.Orientation = 'Vertical'
-    $split.SplitterDistance = 680
-    $split.Panel2MinSize    = 200
+    $split.Dock          = 'Fill'
+    $split.Orientation   = 'Vertical'
+    $split.Panel1MinSize = 25
+    $split.Panel2MinSize = 25
     $Tab.Controls.Add($split)
+
+    $split.Add_HandleCreated({
+        try {
+            if ($split.Width -ge 500) {
+                $split.Panel2MinSize    = 200
+                $split.SplitterDistance = [Math]::Min(680, $split.Width - $split.Panel2MinSize - 10)
+            }
+        } catch { }
+    })
 
     # ════════════════════════════════════════════════════════════════════════
     # LEFT PANEL
