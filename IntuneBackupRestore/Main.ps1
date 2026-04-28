@@ -14,14 +14,14 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ════════════════════════════════════════════════════════════════════════
-# 1. Platform / version guard
+# 1. Platform guard
 # ════════════════════════════════════════════════════════════════════════
 if (-not $IsWindows) {
     Write-Host 'ERROR: This tool requires Windows.' -ForegroundColor Red
     exit 1
 }
 
-Write-Host "[Startup] PowerShell $($PSVersionTable.PSVersion) on $([System.Environment]::OSVersion.VersionString)" -ForegroundColor Cyan
+Write-Host "[Startup] PowerShell $($PSVersionTable.PSVersion)" -ForegroundColor Cyan
 
 # ════════════════════════════════════════════════════════════════════════
 # 2. Paths
@@ -34,7 +34,17 @@ if (-not $ConfigFile) {
 }
 
 # ════════════════════════════════════════════════════════════════════════
-# 3. Load configuration
+# 3. Unblock files (removes Zone.Identifier from files downloaded via browser)
+# ════════════════════════════════════════════════════════════════════════
+try {
+    Get-ChildItem -Path $AppRoot -Recurse -Include '*.ps1','*.psm1' | Unblock-File
+    Write-Host '[Startup] Files unblocked.' -ForegroundColor Cyan
+} catch {
+    Write-Host "[Startup] Unblock-File warning (non-fatal): $_" -ForegroundColor Yellow
+}
+
+# ════════════════════════════════════════════════════════════════════════
+# 4. Load configuration
 # ════════════════════════════════════════════════════════════════════════
 $Config = @{}
 if (Test-Path $ConfigFile) {
@@ -45,7 +55,7 @@ if (Test-Path $ConfigFile) {
         Write-Host "[Startup] WARNING: Could not parse config: $_" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "[Startup] Config file not found, using defaults: $ConfigFile" -ForegroundColor Yellow
+    Write-Host "[Startup] Config file not found, using defaults." -ForegroundColor Yellow
 }
 
 $defaults = @{
@@ -66,7 +76,7 @@ foreach ($key in $defaults.Keys) {
 }
 
 # ════════════════════════════════════════════════════════════════════════
-# 4. Load modules
+# 5. Load modules
 # ════════════════════════════════════════════════════════════════════════
 $moduleOrder = @(
     'Modules\Logging.psm1'
@@ -101,12 +111,17 @@ foreach ($rel in $moduleOrder) {
 }
 
 # ════════════════════════════════════════════════════════════════════════
-# 5. Initialise logging
+# 6. Initialise logging
+#    Initialize-Logging needs a log FILE path and a log LEVEL.
+#    Register-LogQueue wires the ConcurrentQueue for GUI display.
 # ════════════════════════════════════════════════════════════════════════
-$LogQueue = [System.Collections.Concurrent.ConcurrentQueue[hashtable]]::new()
+$LogQueue   = [System.Collections.Concurrent.ConcurrentQueue[hashtable]]::new()
+$sessionLog = Join-Path $env:TEMP "IntuneBackupRestore_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').log"
+
 try {
-    Initialize-Logging -Level $Config['LogLevel'] -LogQueue $LogQueue
-    Write-Host '[Startup] Logging initialised.' -ForegroundColor Cyan
+    Initialize-Logging -LogFile $sessionLog -LogLevel $Config['LogLevel']
+    Register-LogQueue  -Queue $LogQueue
+    Write-Host "[Startup] Logging initialised. Session log: $sessionLog" -ForegroundColor Cyan
 } catch {
     Write-Host "ERROR initialising logging: $_" -ForegroundColor Red
     Read-Host 'Press Enter to exit'
@@ -114,13 +129,14 @@ try {
 }
 
 # ════════════════════════════════════════════════════════════════════════
-# 6. Global state
+# 7. Global state
 # ════════════════════════════════════════════════════════════════════════
 $GlobalState = [System.Collections.Hashtable]::Synchronized(@{
     AppRoot            = $AppRoot
     Config             = $Config
     ConfigFile         = $ConfigFile
     LogQueue           = $LogQueue
+    SessionLogFile     = $sessionLog
     LoggingInitialized = $true
     Connected          = $false
     TenantId           = ''
@@ -135,7 +151,7 @@ $GlobalState = [System.Collections.Hashtable]::Synchronized(@{
 })
 
 # ════════════════════════════════════════════════════════════════════════
-# 7. Load WinForms assemblies
+# 8. Load WinForms
 # ════════════════════════════════════════════════════════════════════════
 try {
     Add-Type -AssemblyName System.Windows.Forms
@@ -150,7 +166,7 @@ try {
 }
 
 # ════════════════════════════════════════════════════════════════════════
-# 8. Dot-source GUI files
+# 9. Dot-source GUI files
 # ════════════════════════════════════════════════════════════════════════
 $guiFiles = @(
     'GUI\MainForm.ps1'
@@ -174,7 +190,8 @@ foreach ($rel in $guiFiles) {
         . $full
         Write-Host "  OK  $rel" -ForegroundColor Green
     } catch {
-        Write-Host "ERROR loading GUI file $rel : $_" -ForegroundColor Red
+        Write-Host "ERROR in $rel : $_" -ForegroundColor Red
+        Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
         Read-Host 'Press Enter to exit'
         exit 1
     }
@@ -183,16 +200,21 @@ foreach ($rel in $guiFiles) {
 Write-Host '[Startup] Launching GUI...' -ForegroundColor Green
 
 # ════════════════════════════════════════════════════════════════════════
-# 9. Run
+# 10. Run
 # ════════════════════════════════════════════════════════════════════════
 try {
     Start-MainForm -GlobalState $GlobalState
 } catch {
     Write-Host "FATAL ERROR in GUI: $_" -ForegroundColor Red
-    Write-Host $_.ScriptStackTrace -ForegroundColor Red
+    Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
     Read-Host 'Press Enter to exit'
 } finally {
+    # Copy session log into backup root if configured
     if ($Config['LogToFile']) {
-        try { Export-LogToFile -GlobalState $GlobalState } catch {}
+        $backupRoot = $Config['BackupRootPath']
+        if ($backupRoot -and (Test-Path $backupRoot) -and (Test-Path $sessionLog)) {
+            $dest = Join-Path $backupRoot "session_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').log"
+            try { Copy-Item -Path $sessionLog -Destination $dest -Force } catch {}
+        }
     }
 }
