@@ -18,7 +18,9 @@
 Set-StrictMode -Version Latest
 
 # Module-level references shared across tab files
-$script:GlobalState  = $null
+# IMPORTANT: This file is dot-sourced into Main.ps1, so `$script:` refers to
+# Main.ps1's scope. Do NOT initialize $script:GlobalState here — it would wipe
+# the $GlobalState that Main.ps1 created. It is set inside Start-MainForm.
 $script:AppVersion   = '1.0.0'
 $script:AppName      = 'Intune Backup & Restore Tool'
 $script:LogFilePath  = $null
