@@ -48,44 +48,42 @@ $script:ActiveRunspace  = $null   # hashtable: PS, Runspace, AsyncResult, Operat
 #region Entry point
 # ---------------------------------------------------------------------------
 
-function Start-MainWindow {
+function Start-MainForm {
     <#
     .SYNOPSIS
         Builds the main form and starts the WinForms message loop.
-        Called from Main.ps1.
+        Called from Main.ps1 as: Start-MainForm -GlobalState $GlobalState
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]                    $XamlPath,     # kept for API compat, not used (WinForms)
-        [Parameter(Mandatory)][System.Collections.Hashtable]$GlobalState,
-        [Parameter(Mandatory)][string]                    $AppVersion,
-        [Parameter(Mandatory)][string]                    $AppName,
-        [Parameter(Mandatory)][object]                    $AppConfig,
-        [Parameter(Mandatory)][string]                    $LogFilePath
+        [Parameter(Mandatory)]
+        [System.Collections.Hashtable]$GlobalState
     )
+
+    # Extract display values from GlobalState (support both old and new key names)
+    $AppVersion  = if ($GlobalState.ContainsKey('AppVersion') -and $GlobalState.AppVersion) { $GlobalState.AppVersion }
+                   elseif ($GlobalState.Config -and $GlobalState.Config['AppVersion'])       { $GlobalState.Config['AppVersion'] }
+                   else { '1.0.0' }
+    $AppName     = if ($GlobalState.ContainsKey('AppName') -and $GlobalState.AppName)       { $GlobalState.AppName }
+                   elseif ($GlobalState.Config -and $GlobalState.Config['AppName'])          { $GlobalState.Config['AppName'] }
+                   else { 'Intune Backup & Restore Tool' }
+    $AppConfig   = $GlobalState.Config
+    $LogFilePath = if ($GlobalState.ContainsKey('SessionLogFile') -and $GlobalState.SessionLogFile) { $GlobalState.SessionLogFile }
+                   elseif ($GlobalState.ContainsKey('LogFilePath') -and $GlobalState.LogFilePath)   { $GlobalState.LogFilePath }
+                   else { '' }
 
     $script:GlobalState = $GlobalState
     $script:AppVersion  = $AppVersion
     $script:AppName     = $AppName
     $script:LogFilePath = $LogFilePath
-    $script:ScriptRoot  = Split-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -Parent
+    $script:ScriptRoot  = $GlobalState.AppRoot
 
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
 
-    # Dot-source tab files (they live alongside this file)
-    $guiDir = $PSScriptRoot
-    foreach ($tabFile in @('Tab_Connection','Tab_Prerequisites','Tab_Backup','Tab_Restore','Tab_Log','Tab_Settings')) {
-        $tabPath = Join-Path $guiDir "$tabFile.ps1"
-        if (Test-Path $tabPath) {
-            . $tabPath
-        } else {
-            Write-Warning "Tab file not found: $tabPath"
-        }
-    }
-
-    # Register the GUI log control (will be set after Log tab is created)
+    # Tab_*.ps1 files are already dot-sourced by Main.ps1 before this function is called.
+    # Re-registering the queue here ensures runspace-safe access from the GUI thread.
     Register-LogQueue -Queue $GlobalState.LogQueue
 
     # ── Build Main Form ───────────────────────────────────────────────────
@@ -97,7 +95,8 @@ function Start-MainWindow {
     $form.Font            = [System.Drawing.Font]::new('Segoe UI', 9)
     $form.BackColor       = [System.Drawing.Color]::FromArgb(245, 245, 245)
 
-    $script:UIRefs.Form = $form
+    $script:UIRefs.Form     = $form
+    $script:UIRefs.MainForm = $form   # alias used by Tab_Restore
 
     # ── Header Panel ─────────────────────────────────────────────────────
     $header = New-Object System.Windows.Forms.Panel
@@ -310,9 +309,19 @@ function Start-BackgroundOperation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][scriptblock]$ScriptBlock,
-        [string]  $OperationType  = 'Generic',
-        [object[]]$AdditionalArgs = @()
+        # OLD architecture params
+        [string]  $OperationType  = '',
+        [object[]]$AdditionalArgs = @(),
+        # NEW architecture aliases (Tab_Restore uses these)
+        [string]  $OperationKey   = '',
+        [object[]]$ArgumentList   = @(),
+        [hashtable]$GlobalState   = $null,   # accepted but ignored; we use $script:GlobalState
+        [hashtable]$UIRefs        = $null    # accepted but ignored; we use $script:UIRefs
     )
+    # Reconcile old/new param names
+    if (-not $OperationType -and $OperationKey)          { $OperationType  = $OperationKey }
+    if (-not $OperationType)                              { $OperationType  = 'Generic' }
+    if ($AdditionalArgs.Count -eq 0 -and $ArgumentList.Count -gt 0) { $AdditionalArgs = $ArgumentList }
 
     if ($script:ActiveRunspace) {
         [System.Windows.Forms.MessageBox]::Show(
@@ -347,11 +356,15 @@ function Start-BackgroundOperation {
             Import-Module 'Microsoft.Graph.Authentication' -Force
         }
 
-        # Point logging at the shared queue
-        Initialize-LoggingForRunspace `
-            -LogQueue  $GlobalState.LogQueue `
-            -LogFile   $GlobalState.LogFilePath `
-            -LogLevel  $GlobalState.LogLevel
+        # Point logging at the shared queue (compatible with both old/new GlobalState key names)
+        $logFile  = if ($GlobalState.ContainsKey('SessionLogFile') -and $GlobalState.SessionLogFile) { $GlobalState.SessionLogFile }
+                    elseif ($GlobalState.ContainsKey('LogFilePath') -and $GlobalState.LogFilePath)   { $GlobalState.LogFilePath }
+                    else { $null }
+        $logLevel = if ($GlobalState.ContainsKey('LogLevel') -and $GlobalState.LogLevel)             { $GlobalState.LogLevel }
+                    elseif ($GlobalState.Config -and $GlobalState.Config['LogLevel'])                 { $GlobalState.Config['LogLevel'] }
+                    else { 'INFO' }
+        if ($logFile) { Initialize-Logging -LogFile $logFile -LogLevel $logLevel }
+        Register-LogQueue -Queue $GlobalState.LogQueue
 
         # Execute caller's payload
         & $Payload $GlobalState $ExtraArgs
@@ -518,8 +531,4 @@ function Initialize-LoggingForRunspace {
 
 #endregion
 
-Export-ModuleMember -Function `
-    Start-MainWindow, `
-    Start-BackgroundOperation, `
-    Update-StatusBar, `
-    Update-TenantDisplay
+# This file is dot-sourced (not a module) — Export-ModuleMember must NOT be called here.

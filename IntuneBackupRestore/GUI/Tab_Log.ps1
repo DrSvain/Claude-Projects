@@ -6,11 +6,11 @@
 
 function Initialize-TabLog {
     param(
-        [System.Windows.Forms.TabPage]$Tab,
-        [hashtable]$GlobalState,
-        [hashtable]$UIRefs
+        [hashtable]$UIRefs,
+        [hashtable]$GlobalState
     )
 
+    $Tab = New-Object System.Windows.Forms.TabPage
     $Tab.Text    = 'Log'
     $Tab.Padding = [System.Windows.Forms.Padding]::new(8)
 
@@ -269,6 +269,8 @@ function Initialize-TabLog {
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
     })
+
+    return $Tab
 }
 
 # ── Small layout helpers (private to this file) ──────────────────────────────

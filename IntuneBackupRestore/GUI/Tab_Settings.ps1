@@ -6,11 +6,13 @@
 
 function Initialize-TabSettings {
     param(
-        [System.Windows.Forms.TabPage]$Tab,
+        [hashtable]$UIRefs,
         [hashtable]$GlobalState,
-        [hashtable]$UIRefs
+        [hashtable]$AppConfig   = $null,   # passed by MainForm but GlobalState.Config is used internally
+        [string]$LogFilePath    = ''       # passed by MainForm but ignored (Config path is shown instead)
     )
 
+    $Tab = New-Object System.Windows.Forms.TabPage
     $Tab.Text    = 'Settings'
     $Tab.Padding = [System.Windows.Forms.Padding]::new(12)
 
@@ -257,6 +259,8 @@ function Initialize-TabSettings {
     })
 
     $UIRefs.ReloadSettingsTab = { Load-SettingsFromConfig }
+
+    return $Tab
 }
 
 # ── Layout helpers ────────────────────────────────────────────────────────────

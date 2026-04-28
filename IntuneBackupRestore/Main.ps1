@@ -132,22 +132,51 @@ try {
 # 7. Global state
 # ════════════════════════════════════════════════════════════════════════
 $GlobalState = [System.Collections.Hashtable]::Synchronized(@{
+    # App identity
     AppRoot            = $AppRoot
+    AppName            = 'Intune Backup & Restore Tool'
+    AppVersion         = '1.0.0'
     Config             = $Config
     ConfigFile         = $ConfigFile
+
+    # Logging
     LogQueue           = $LogQueue
     SessionLogFile     = $sessionLog
+    LogFilePath        = $sessionLog          # backward-compat alias
+    LogLevel           = $Config['LogLevel']
     LoggingInitialized = $true
-    Connected          = $false
+
+    # Connection  — set by Tab_Connection on sign-in
+    IsConnected        = $false               # used by Tab_Connection / Tab_Backup
+    Connected          = $false               # used by Tab_Restore (new-arch key)
     TenantId           = ''
-    TenantName         = ''
-    UserPrincipalName  = ''
+    TenantDisplayName  = ''                   # used by MainForm timer
+    TenantName         = ''                   # used by Tab_Restore (new-arch key)
+    ConnectedUser      = ''                   # used by MainForm timer
+    UserPrincipalName  = ''                   # used by Tab_Restore (new-arch key)
     AccountId          = ''
+    ConnectionTime     = $null
+
+    # Backup  — populated from Config; overwritten by Tab_Backup UI
+    BackupRootPath     = $(
+        $raw = $Config['BackupRootPath']
+        if ($raw) { [System.Environment]::ExpandEnvironmentVariables($raw) }
+        else      { $defaults['BackupRootPath'] }
+    )
+    IncludeAssignments = [bool]($Config['ExportAssignments'] -ne $false)
+    ComputeChecksums   = [bool]($Config['WriteChecksums']   -eq $true)
+    MaxRetries         = [int]$Config['MaxRetries']
+    IsBackupRunning    = $false
+    BackupProgress     = 0
+    BackupProgressText = ''
+
+    # Restore
+    IsRestoreRunning   = $false
+    RestoreProgress    = 0
+    RestoreProgressText = ''
     BackupResult       = $null
     RestoreResult      = $null
     ConflictResult     = $null
-    BackupProgress     = 0
-    RestoreProgress    = 0
 })
 
 # ════════════════════════════════════════════════════════════════════════

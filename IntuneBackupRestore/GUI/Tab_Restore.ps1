@@ -6,11 +6,11 @@
 
 function Initialize-TabRestore {
     param(
-        [System.Windows.Forms.TabPage]$Tab,
-        [hashtable]$GlobalState,
-        [hashtable]$UIRefs
+        [hashtable]$UIRefs,
+        [hashtable]$GlobalState
     )
 
+    $Tab = New-Object System.Windows.Forms.TabPage
     $Tab.Text = 'Restore'
     $Tab.Padding = [System.Windows.Forms.Padding]::new(10)
 
@@ -588,6 +588,8 @@ function Initialize-TabRestore {
         })
         $restoreTimer.Start()
     })
+
+    return $Tab
 }
 
 # ── Small helpers (avoid duplication with other tabs) ────────────────────────
