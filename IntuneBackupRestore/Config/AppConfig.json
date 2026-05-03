@@ -1,0 +1,13 @@
+{
+  "BackupRootPath": "",
+  "WriteChecksums": false,
+  "ConfirmRestore": true,
+  "ExportAssignments": true,
+  "LogLevel": "INFO",
+  "LogToFile": true,
+  "MaxRetries": 3,
+  "BaseDelaySeconds": 2,
+  "PageSize": 100,
+  "ConfirmDisconnect": true,
+  "ShowDebugInUI": false
+}
