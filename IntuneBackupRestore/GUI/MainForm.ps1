@@ -26,6 +26,12 @@ $script:AppName      = 'Intune Backup & Restore Tool'
 $script:LogFilePath  = $null
 $script:ScriptRoot   = $null
 
+# Tracks the last observed value of $GlobalState.IsConnected so the 250 ms
+# timer can fire Update-TenantDisplay only on transitions. Must be initialized
+# here (not inside the timer body) because Set-StrictMode is in effect and
+# would throw on a first-time read of an uninitialized $script: variable.
+$script:LastIsConnected = $false
+
 # UI control references used by the timer and background-op helpers
 $script:UIRefs = @{
     Form                = $null
@@ -286,9 +292,9 @@ function Update-UIFromTimer {
     catch { }
 
     # 6. Detect IsConnected transitions and refresh tenant labels + scope grid
-    if (-not $script:LastIsConnected) { $script:LastIsConnected = $false }
-    if ([bool]$script:GlobalState.IsConnected -ne [bool]$script:LastIsConnected) {
-        $script:LastIsConnected = [bool]$script:GlobalState.IsConnected
+    $currentConnected = [bool]$script:GlobalState.IsConnected
+    if ($currentConnected -ne $script:LastIsConnected) {
+        $script:LastIsConnected = $currentConnected
         try { Update-TenantDisplay } catch { }
     }
 }
