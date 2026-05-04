@@ -42,8 +42,54 @@ function Initialize-TabSettings {
     $chkConfirmRestore = New-SettingsCheck -Text 'Show confirmation dialog before each restore operation' -X 160 -Y 76
     $grpBackup.Controls.Add($chkConfirmRestore)
 
-    $chkExportAssignments = New-SettingsCheck -Text 'Export assignments (documentation only, never restored)' -X 160 -Y 100
+    $chkExportAssignments = New-SettingsCheck -Text 'Export assignments (and create .assignments.json sidecars)' -X 160 -Y 100
     $grpBackup.Controls.Add($chkExportAssignments)
+
+    # ── Restore options ──────────────────────────────────────────────────────
+    $grpRestore = New-SettingsGroup -Parent $scroll -Text 'Restore Defaults' -Y $yPos -Height 110
+    $yPos += 118
+
+    Add-FieldLabel -Parent $grpRestore -Text 'Conflict mode:' -Y 24
+    $cmbConflictMode = [System.Windows.Forms.ComboBox]::new()
+    $cmbConflictMode.Location      = [System.Drawing.Point]::new(160, 21)
+    $cmbConflictMode.Width         = 180
+    $cmbConflictMode.DropDownStyle = 'DropDownList'
+    $cmbConflictMode.Items.AddRange([string[]]@('Skip', 'CreateDuplicate', 'UpdateExisting'))
+    $cmbConflictMode.SelectedIndex = 0
+    $grpRestore.Controls.Add($cmbConflictMode)
+    Add-FieldLabel -Parent $grpRestore -Text '(applies when an object name already exists in the target tenant)' -Y 24 -X 350 -Width 360 -Color Gray
+
+    $chkRestoreAssignments = New-SettingsCheck -Text 'Restore assignments by default (resolve groups by displayName in target tenant)' -X 160 -Y 50
+    $grpRestore.Controls.Add($chkRestoreAssignments)
+
+    $chkDryRunDefault = New-SettingsCheck -Text 'Dry run (validate-only) by default — no Graph writes until disabled' -X 160 -Y 76
+    $grpRestore.Controls.Add($chkDryRunDefault)
+
+    # ── Graph API endpoint group ─────────────────────────────────────────────
+    $grpGraph = New-SettingsGroup -Parent $scroll -Text 'Graph API Endpoints' -Y $yPos -Height 90
+    $yPos += 98
+
+    $chkUseBeta = New-SettingsCheck -Text 'Prefer beta endpoint where v1.0 is incomplete (per-category overrides in AppConfig.json)' -X 160 -Y 24
+    $grpGraph.Controls.Add($chkUseBeta)
+
+    $lblBetaInfo = [System.Windows.Forms.Label]::new()
+    $lblBetaInfo.Location  = [System.Drawing.Point]::new(160, 50)
+    $lblBetaInfo.Size      = [System.Drawing.Size]::new(580, 32)
+    $lblBetaInfo.Font      = [System.Drawing.Font]::new('Segoe UI', 8.5)
+    $lblBetaInfo.ForeColor = [System.Drawing.Color]::Gray
+    $lblBetaInfo.Text      = 'Workloads pinned to beta: ProactiveRemediations, AdministrativeTemplates. Others honour the per-category override in EndpointVersions.'
+    $grpGraph.Controls.Add($lblBetaInfo)
+
+    # ── Naming pattern ───────────────────────────────────────────────────────
+    $grpName = New-SettingsGroup -Parent $scroll -Text 'Backup Folder Naming' -Y $yPos -Height 60
+    $yPos += 68
+
+    Add-FieldLabel -Parent $grpName -Text 'Pattern:' -Y 22
+    $txtNamingPattern = [System.Windows.Forms.TextBox]::new()
+    $txtNamingPattern.Location = [System.Drawing.Point]::new(160, 20)
+    $txtNamingPattern.Width    = 540
+    $grpName.Controls.Add($txtNamingPattern)
+    Add-FieldLabel -Parent $grpName -Text 'Tokens: {tenant} {tenantId} {timestamp}' -Y 22 -X 706 -Width 240 -Color Gray
 
     $btnPickPath.Add_Click({
         $dlg = [System.Windows.Forms.FolderBrowserDialog]::new()
@@ -146,6 +192,19 @@ function Initialize-TabSettings {
         $chkConfirmRestore.Checked    = ($cfg['ConfirmRestore']    -ne $false)
         $chkExportAssignments.Checked = ($cfg['ExportAssignments'] -ne $false)
 
+        # Restore defaults
+        $cm = if ($cfg['ConflictMode']) { [string]$cfg['ConflictMode'] } else { 'Skip' }
+        $cmIdx = $cmbConflictMode.Items.IndexOf($cm)
+        $cmbConflictMode.SelectedIndex = if ($cmIdx -ge 0) { $cmIdx } else { 0 }
+        $chkRestoreAssignments.Checked = [bool]($cfg['RestoreAssignmentsByDefault'] -eq $true)
+        $chkDryRunDefault.Checked      = [bool]($cfg['DryRunByDefault'] -eq $true)
+
+        # Graph endpoints
+        $chkUseBeta.Checked = [bool]($cfg['UseBetaWherePossible'] -eq $true)
+
+        # Naming pattern
+        $txtNamingPattern.Text = if ($cfg['BackupFolderNamingPattern']) { [string]$cfg['BackupFolderNamingPattern'] } else { '{tenant}_{tenantId}/{timestamp}' }
+
         $logLevel = if ($cfg['LogLevel']) { $cfg['LogLevel'] } else { 'INFO' }
         $li = $cmbLogLevel.Items.IndexOf($logLevel)
         if ($li -ge 0) { $cmbLogLevel.SelectedIndex = $li }
@@ -190,17 +249,22 @@ function Initialize-TabSettings {
         }
 
         $newCfg = @{
-            BackupRootPath    = $pathVal
-            WriteChecksums    = $chkChecksum.Checked
-            ConfirmRestore    = $chkConfirmRestore.Checked
-            ExportAssignments = $chkExportAssignments.Checked
-            LogLevel          = $cmbLogLevel.SelectedItem.ToString()
-            LogToFile         = $chkLogToFile.Checked
-            MaxRetries        = [int]$numMaxRetries.Value
-            BaseDelaySeconds  = [int]$numBaseDelay.Value
-            PageSize          = [int]$numPageSize.Value
-            ConfirmDisconnect = $chkConfirmDisconnect.Checked
-            ShowDebugInUI     = $chkShowDebug.Checked
+            BackupRootPath              = $pathVal
+            BackupFolderNamingPattern   = $txtNamingPattern.Text.Trim()
+            WriteChecksums              = $chkChecksum.Checked
+            ConfirmRestore              = $chkConfirmRestore.Checked
+            ExportAssignments           = $chkExportAssignments.Checked
+            ConflictMode                = $cmbConflictMode.SelectedItem.ToString()
+            RestoreAssignmentsByDefault = $chkRestoreAssignments.Checked
+            DryRunByDefault             = $chkDryRunDefault.Checked
+            UseBetaWherePossible        = $chkUseBeta.Checked
+            LogLevel                    = $cmbLogLevel.SelectedItem.ToString()
+            LogToFile                   = $chkLogToFile.Checked
+            MaxRetries                  = [int]$numMaxRetries.Value
+            BaseDelaySeconds            = [int]$numBaseDelay.Value
+            PageSize                    = [int]$numPageSize.Value
+            ConfirmDisconnect           = $chkConfirmDisconnect.Checked
+            ShowDebugInUI               = $chkShowDebug.Checked
         }
 
         $cfg = $GlobalState['Config']
@@ -210,6 +274,16 @@ function Initialize-TabSettings {
             $GlobalState['Config'] = $newCfg
             $cfg = $newCfg
         }
+
+        # Re-apply Graph endpoint preferences live so subsequent backups/restores
+        # honour the new UseBetaWherePossible / EndpointVersions immediately.
+        try {
+            $epOverrides = $null
+            if ($cfg.ContainsKey('EndpointVersions') -and $cfg['EndpointVersions']) {
+                $epOverrides = [hashtable]$cfg['EndpointVersions']
+            }
+            Set-GraphEndpointConfig -UseBetaWherePossible ([bool]$cfg['UseBetaWherePossible']) -EndpointVersions $epOverrides
+        } catch { }
 
         $cfgFile = $GlobalState['ConfigFile']
         if ($cfgFile) {

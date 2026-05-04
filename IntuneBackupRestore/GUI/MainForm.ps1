@@ -284,6 +284,13 @@ function Update-UIFromTimer {
         }
     }
     catch { }
+
+    # 6. Detect IsConnected transitions and refresh tenant labels + scope grid
+    if (-not $script:LastIsConnected) { $script:LastIsConnected = $false }
+    if ([bool]$script:GlobalState.IsConnected -ne [bool]$script:LastIsConnected) {
+        $script:LastIsConnected = [bool]$script:GlobalState.IsConnected
+        try { Update-TenantDisplay } catch { }
+    }
 }
 
 #endregion
@@ -338,10 +345,11 @@ function Start-BackgroundOperation {
     $bootstrapScript = {
         param($GlobalState, $ModulesRoot, $Payload, $ExtraArgs)
 
-        # Import tool modules (order matters)
+        # Import tool modules (order matters — Helpers before AssignmentEngine
+        # before workloads before BackupEngine/RestoreEngine).
         $mods = @(
             'Logging', 'Helpers', 'Prerequisites', 'GraphConnection',
-            'BackupEngine', 'RestoreEngine'
+            'AssignmentEngine', 'BackupEngine', 'RestoreEngine'
         )
         foreach ($m in $mods) {
             $path = Join-Path $ModulesRoot "$m.psm1"
@@ -352,6 +360,20 @@ function Start-BackgroundOperation {
         foreach ($wl in Get-ChildItem -Path $wlDir -Filter '*.psm1' -ErrorAction SilentlyContinue) {
             Import-Module $wl.FullName -Force -Global
         }
+
+        # Replay endpoint version config so Get-GraphRoot inside the runspace
+        # honours UseBetaWherePossible and per-category overrides.
+        try {
+            $cfg = $GlobalState.Config
+            if ($cfg) {
+                $useBeta = [bool]($cfg['UseBetaWherePossible'] -eq $true)
+                $epOver  = $null
+                if ($cfg.ContainsKey('EndpointVersions') -and $cfg['EndpointVersions']) {
+                    $epOver = [hashtable]$cfg['EndpointVersions']
+                }
+                Set-GraphEndpointConfig -UseBetaWherePossible $useBeta -EndpointVersions $epOver
+            }
+        } catch { }
 
         # Reuse Graph auth context (static .NET object shared across runspaces)
         if (Get-Module -Name 'Microsoft.Graph.Authentication' -ListAvailable) {
@@ -501,6 +523,13 @@ function Update-TenantDisplay {
     if ($script:UIRefs.BtnConnect)    { $script:UIRefs.BtnConnect.Enabled    = (-not $connected) }
     if ($script:UIRefs.BtnDisconnect) { $script:UIRefs.BtnDisconnect.Enabled = $connected }
     if ($script:UIRefs.BtnStartBackup){ $script:UIRefs.BtnStartBackup.Enabled = $connected }
+    if ($script:UIRefs.BtnRequestScopes) { $script:UIRefs.BtnRequestScopes.Enabled = $connected }
+    if ($script:UIRefs.BtnSwitchTenant)  { $script:UIRefs.BtnSwitchTenant.Enabled  = $connected }
+
+    # Refresh scope-status grid (Tab_Connection registers this callback)
+    if ($script:UIRefs.RefreshScopeStatus) {
+        try { & $script:UIRefs.RefreshScopeStatus } catch { }
+    }
 
     # Restore target tenant label
     if ($script:UIRefs.LblRestoreTargetTenant) {

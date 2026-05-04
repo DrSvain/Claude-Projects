@@ -13,6 +13,8 @@
       - Get-SHA256                : SHA-256 hash of a file or string
       - Remove-GraphMetaProperties: Strip read-only / system fields before import
       - ConvertTo-Hashtable       : Deep PSObject → Hashtable (for API bodies)
+      - Get-GraphRoot             : Resolve v1.0/beta base URL per workload
+      - Get-EndpointVersion       : Return 'v1.0' or 'beta' for a workload key
 #>
 
 Set-StrictMode -Version Latest
@@ -420,6 +422,118 @@ function ConvertTo-Hashtable {
 #endregion
 
 # ---------------------------------------------------------------------------
+#region Endpoint resolution (v1.0 / beta)
+# ---------------------------------------------------------------------------
+
+# Default per-workload endpoint family. Workloads may override these via
+# AppConfig.json -> EndpointVersions. Categories that only exist on the beta
+# endpoint default to 'beta' here so that an empty config still works.
+$script:DefaultEndpointVersions = @{
+    CompliancePolicies       = 'v1.0'
+    ConfigProfiles           = 'v1.0'
+    SettingsCatalog          = 'v1.0'
+    EndpointSecurity         = 'v1.0'
+    DeviceScripts            = 'v1.0'
+    Autopilot                = 'v1.0'
+    EnrollmentConfigurations = 'v1.0'
+    AppProtection            = 'v1.0'
+    AppConfiguration         = 'v1.0'
+    ProactiveRemediations    = 'beta'
+    AdministrativeTemplates  = 'beta'
+    Assignment               = 'v1.0'   # used by AssignmentEngine
+}
+
+# Workloads that have NO v1.0 surface; force beta regardless of config.
+$script:BetaOnlyWorkloads = @(
+    'ProactiveRemediations'
+    'AdministrativeTemplates'
+)
+
+function Get-EndpointVersion {
+    <#
+    .SYNOPSIS
+        Returns 'v1.0' or 'beta' for a workload key.
+
+    .DESCRIPTION
+        Resolution order:
+          1. If $WorkloadKey is in $BetaOnlyWorkloads → always 'beta'.
+          2. AppConfig.json -> EndpointVersions[$WorkloadKey] if set.
+          3. AppConfig.json -> UseBetaWherePossible = $true → 'beta'.
+          4. $DefaultEndpointVersions[$WorkloadKey].
+          5. Fallback: 'v1.0'.
+
+        Reads from $script:GraphEndpointConfig which is set by Set-GraphEndpointConfig
+        (called from Main.ps1 after AppConfig.json is loaded).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$WorkloadKey
+    )
+
+    if ($script:BetaOnlyWorkloads -contains $WorkloadKey) {
+        return 'beta'
+    }
+
+    $cfg = $script:GraphEndpointConfig
+    if ($cfg) {
+        if ($cfg.EndpointVersions -and $cfg.EndpointVersions[$WorkloadKey]) {
+            $v = [string]$cfg.EndpointVersions[$WorkloadKey]
+            if ($v -in 'v1.0','beta') { return $v }
+        }
+        if ($cfg.UseBetaWherePossible) {
+            return 'beta'
+        }
+    }
+
+    if ($script:DefaultEndpointVersions.ContainsKey($WorkloadKey)) {
+        return $script:DefaultEndpointVersions[$WorkloadKey]
+    }
+    return 'v1.0'
+}
+
+function Get-GraphRoot {
+    <#
+    .SYNOPSIS
+        Returns the Graph base URL for a workload, e.g.
+        'https://graph.microsoft.com/v1.0' or '.../beta'.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$WorkloadKey
+    )
+    $version = Get-EndpointVersion -WorkloadKey $WorkloadKey
+    return "https://graph.microsoft.com/$version"
+}
+
+function Set-GraphEndpointConfig {
+    <#
+    .SYNOPSIS
+        Stores endpoint preferences for Get-EndpointVersion / Get-GraphRoot
+        to consult. Called from Main.ps1 once AppConfig.json is loaded and
+        again whenever the Settings tab saves changes.
+
+    .PARAMETER UseBetaWherePossible
+        Global override – when $true, all non-locked workloads return 'beta'.
+
+    .PARAMETER EndpointVersions
+        Hashtable WorkloadKey -> 'v1.0'|'beta' (per-workload override).
+    #>
+    [CmdletBinding()]
+    param(
+        [bool]$UseBetaWherePossible = $false,
+        [hashtable]$EndpointVersions = $null
+    )
+    $script:GraphEndpointConfig = @{
+        UseBetaWherePossible = $UseBetaWherePossible
+        EndpointVersions     = $EndpointVersions
+    }
+}
+
+#endregion
+
+# ---------------------------------------------------------------------------
 #region Private helpers  (not exported)
 # ---------------------------------------------------------------------------
 
@@ -461,4 +575,7 @@ Export-ModuleMember -Function `
     ConvertTo-SafeFileName, `
     Get-SHA256, `
     Remove-GraphMetaProperties, `
-    ConvertTo-Hashtable
+    ConvertTo-Hashtable, `
+    Get-EndpointVersion, `
+    Get-GraphRoot, `
+    Set-GraphEndpointConfig
