@@ -21,10 +21,21 @@ Set-StrictMode -Version Latest
 # IMPORTANT: This file is dot-sourced into Main.ps1, so `$script:` refers to
 # Main.ps1's scope. Do NOT initialize $script:GlobalState here — it would wipe
 # the $GlobalState that Main.ps1 created. It is set inside Start-MainForm.
-$script:AppVersion   = '1.0.0'
+$script:AppVersion   = '1.1.0'
 $script:AppName      = 'Intune Backup & Restore Tool'
 $script:LogFilePath  = $null
 $script:ScriptRoot   = $null
+
+# Tracks the last observed value of $GlobalState.IsConnected so the 250 ms
+# timer can fire Update-TenantDisplay only on transitions. Must be initialized
+# here (not inside the timer body) because Set-StrictMode is in effect and
+# would throw on a first-time read of an uninitialized $script: variable.
+$script:LastIsConnected = $false
+
+# Custom tab navigation registries (filled inside Start-MainForm). Must be
+# initialised here so Show-Tab can read them safely under Set-StrictMode.
+$script:NavButtons = @{}
+$script:TabPages   = @{}
 
 # UI control references used by the timer and background-op helpers
 $script:UIRefs = @{
@@ -152,23 +163,119 @@ function Start-MainForm {
     $script:UIRefs.StatusLabel      = $statusLeft
     $script:UIRefs.StatusRightLabel = $statusRight
 
-    # ── TabControl ────────────────────────────────────────────────────────
-    $tabCtrl = New-Object System.Windows.Forms.TabControl
-    $tabCtrl.Dock     = 'Fill'
-    $tabCtrl.Font     = [System.Drawing.Font]::new('Segoe UI', 9)
-    $tabCtrl.Padding  = [System.Drawing.Point]::new(10, 4)
+    # ── Navigation strip + content host ─────────────────────────────────
+    # We do NOT use System.Windows.Forms.TabControl: on some Windows 10/11
+    # theme + DPI combinations its tab strip renders almost transparently
+    # and the user has no way to switch tabs. We replace it with an
+    # explicit horizontal nav strip of toggle buttons + a Fill content
+    # panel that shows one tab at a time. This gives us full control over
+    # appearance.
 
-    $script:UIRefs.TabControl = $tabCtrl
+    $navStrip = New-Object System.Windows.Forms.Panel
+    $navStrip.Dock      = 'Top'
+    $navStrip.Height    = 46
+    $navStrip.BackColor = [System.Drawing.Color]::FromArgb(225, 232, 240)
 
-    # Build each tab (functions defined in Tab_*.ps1 files)
-    $tabCtrl.TabPages.Add((Initialize-TabConnection   -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabPrerequisites -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabBackup        -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabRestore       -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabLog           -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabSettings      -UIRefs $script:UIRefs -GlobalState $GlobalState -AppConfig $AppConfig -LogFilePath $LogFilePath))
+    $contentPanel = New-Object System.Windows.Forms.Panel
+    $contentPanel.Dock      = 'Fill'
+    $contentPanel.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
 
-    $form.Controls.Add($tabCtrl)
+    $script:UIRefs.NavStrip     = $navStrip
+    $script:UIRefs.ContentPanel = $contentPanel
+
+    # Build each tab. Wrap every Initialize-Tab* call so that a failure in
+    # one tab still lets the other tabs load — otherwise the user only
+    # sees a half-rendered form with no tab strip and no way to debug.
+    $tabsToBuild = @(
+        @{ Name = 'Connection';    Init = { Initialize-TabConnection    -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Prerequisites'; Init = { Initialize-TabPrerequisites -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Backup';        Init = { Initialize-TabBackup        -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Restore';       Init = { Initialize-TabRestore       -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Log';           Init = { Initialize-TabLog           -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Settings';      Init = { Initialize-TabSettings      -UIRefs $script:UIRefs -GlobalState $GlobalState -AppConfig $AppConfig -LogFilePath $LogFilePath } }
+    )
+
+    $script:NavButtons = @{}
+    $script:TabPages   = @{}
+
+    $btnLeft = 6
+    foreach ($t in $tabsToBuild) {
+        $page = $null
+        try {
+            $page = & $t.Init
+            if (-not ($page -is [System.Windows.Forms.TabPage])) {
+                throw "Initialize-Tab$($t.Name) did not return a TabPage."
+            }
+            Write-Host "[Startup] Tab loaded: $($t.Name)" -ForegroundColor Green
+        }
+        catch {
+            $errMsg = "Tab '$($t.Name)' failed to initialize: $($_.Exception.Message)"
+            Write-Host "ERROR: $errMsg" -ForegroundColor Red
+            Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
+            try { Write-LogMessage -Level ERROR -Message $errMsg -ErrorRecord $_ } catch { }
+
+            $page = New-Object System.Windows.Forms.TabPage
+            $lbl  = New-Object System.Windows.Forms.Label
+            $lbl.Text      = "Tab '$($t.Name)' failed to initialize.`r`n`r`n$($_.Exception.Message)`r`n`r`n$($_.ScriptStackTrace)"
+            $lbl.Dock      = 'Fill'
+            $lbl.Font      = [System.Drawing.Font]::new('Consolas', 9)
+            $lbl.ForeColor = [System.Drawing.Color]::DarkRed
+            $lbl.AutoSize  = $false
+            $lbl.Padding   = [System.Windows.Forms.Padding]::new(12)
+            $page.Controls.Add($lbl)
+        }
+
+        # TabPage instances can only live inside a TabControl. Move their
+        # child controls into a plain Panel so we can host them ourselves.
+        $hostPanel = New-Object System.Windows.Forms.Panel
+        $hostPanel.Dock      = 'Fill'
+        $hostPanel.Visible   = $false
+        $hostPanel.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+        $hostPanel.Padding   = [System.Windows.Forms.Padding]::new(10)
+
+        # Snapshot first because removing controls mutates the collection
+        $children = @($page.Controls | ForEach-Object { $_ })
+        foreach ($child in $children) {
+            $page.Controls.Remove($child)
+            $hostPanel.Controls.Add($child)
+        }
+
+        $contentPanel.Controls.Add($hostPanel)
+        $script:TabPages[$t.Name] = $hostPanel
+
+        # Build the nav button for this tab
+        $btn           = New-Object System.Windows.Forms.Button
+        $btn.Text      = $t.Name
+        $btn.Tag       = $t.Name
+        $btn.Location  = [System.Drawing.Point]::new($btnLeft, 5)
+        $btn.Size      = [System.Drawing.Size]::new(150, 32)
+        $btn.Font      = [System.Drawing.Font]::new('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+        $btn.FlatStyle = 'Flat'
+        $btn.BackColor = [System.Drawing.Color]::FromArgb(225, 232, 240)
+        $btn.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+        $btn.FlatAppearance.BorderSize         = 0
+        $btn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(200, 215, 230)
+        $btn.Cursor    = [System.Windows.Forms.Cursors]::Hand
+        $btn.Add_Click({
+            param($sender, $e)
+            Show-Tab -Name $sender.Tag
+        })
+        $navStrip.Controls.Add($btn)
+        $script:NavButtons[$t.Name] = $btn
+
+        $btnLeft += 156
+    }
+
+    # Add to the form in dock-priority order: Top docks first then Fill
+    # fills what remains. (Form-level $statusBar is already docked Bottom.)
+    # WinForms processes docked siblings in the order they appear in the
+    # parent's Controls collection, so navStrip MUST be added before
+    # contentPanel for Top to claim its space first.
+    $form.Controls.Add($navStrip)
+    $form.Controls.Add($contentPanel)
+
+    # Show the first tab by default
+    Show-Tab -Name 'Connection'
 
     # ── 250 ms UI refresh Timer ───────────────────────────────────────────
     $timer = New-Object System.Windows.Forms.Timer
@@ -284,6 +391,13 @@ function Update-UIFromTimer {
         }
     }
     catch { }
+
+    # 6. Detect IsConnected transitions and refresh tenant labels + scope grid
+    $currentConnected = [bool]$script:GlobalState.IsConnected
+    if ($currentConnected -ne $script:LastIsConnected) {
+        $script:LastIsConnected = $currentConnected
+        try { Update-TenantDisplay } catch { }
+    }
 }
 
 #endregion
@@ -338,10 +452,11 @@ function Start-BackgroundOperation {
     $bootstrapScript = {
         param($GlobalState, $ModulesRoot, $Payload, $ExtraArgs)
 
-        # Import tool modules (order matters)
+        # Import tool modules (order matters — Helpers before AssignmentEngine
+        # before workloads before BackupEngine/RestoreEngine).
         $mods = @(
             'Logging', 'Helpers', 'Prerequisites', 'GraphConnection',
-            'BackupEngine', 'RestoreEngine'
+            'AssignmentEngine', 'BackupEngine', 'RestoreEngine'
         )
         foreach ($m in $mods) {
             $path = Join-Path $ModulesRoot "$m.psm1"
@@ -352,6 +467,20 @@ function Start-BackgroundOperation {
         foreach ($wl in Get-ChildItem -Path $wlDir -Filter '*.psm1' -ErrorAction SilentlyContinue) {
             Import-Module $wl.FullName -Force -Global
         }
+
+        # Replay endpoint version config so Get-GraphRoot inside the runspace
+        # honours UseBetaWherePossible and per-category overrides.
+        try {
+            $cfg = $GlobalState.Config
+            if ($cfg) {
+                $useBeta = [bool]($cfg['UseBetaWherePossible'] -eq $true)
+                $epOver  = $null
+                if ($cfg.ContainsKey('EndpointVersions') -and $cfg['EndpointVersions']) {
+                    $epOver = [hashtable]$cfg['EndpointVersions']
+                }
+                Set-GraphEndpointConfig -UseBetaWherePossible $useBeta -EndpointVersions $epOver
+            }
+        } catch { }
 
         # Reuse Graph auth context (static .NET object shared across runspaces)
         if (Get-Module -Name 'Microsoft.Graph.Authentication' -ListAvailable) {
@@ -473,6 +602,36 @@ function Update-StatusBar {
     }
 }
 
+function Show-Tab {
+    <#
+    .SYNOPSIS
+        Hides all tab pages, shows the named one, and highlights the
+        matching nav button.
+    #>
+    param([Parameter(Mandatory)][string]$Name)
+
+    if (-not $script:TabPages -or -not $script:TabPages.ContainsKey($Name)) {
+        return
+    }
+
+    foreach ($key in $script:TabPages.Keys) {
+        $script:TabPages[$key].Visible = ($key -eq $Name)
+    }
+
+    if ($script:NavButtons) {
+        foreach ($key in $script:NavButtons.Keys) {
+            $btn = $script:NavButtons[$key]
+            if ($key -eq $Name) {
+                $btn.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 212)
+                $btn.ForeColor = [System.Drawing.Color]::White
+            } else {
+                $btn.BackColor = [System.Drawing.Color]::FromArgb(225, 232, 240)
+                $btn.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+            }
+        }
+    }
+}
+
 function Update-TenantDisplay {
     <#
     .SYNOPSIS
@@ -501,6 +660,16 @@ function Update-TenantDisplay {
     if ($script:UIRefs.BtnConnect)    { $script:UIRefs.BtnConnect.Enabled    = (-not $connected) }
     if ($script:UIRefs.BtnDisconnect) { $script:UIRefs.BtnDisconnect.Enabled = $connected }
     if ($script:UIRefs.BtnStartBackup){ $script:UIRefs.BtnStartBackup.Enabled = $connected }
+    if ($script:UIRefs.BtnRequestScopes) { $script:UIRefs.BtnRequestScopes.Enabled = $connected }
+    if ($script:UIRefs.BtnSwitchTenant)  { $script:UIRefs.BtnSwitchTenant.Enabled  = $connected }
+
+    # Refresh scope-status grid (Tab_Connection registers this callback).
+    # The scriptblock takes $UIRefs as an argument; we pass it explicitly so
+    # the callback does not depend on dynamic-scope lookup of locals from the
+    # tab init function (which would fail under StrictMode).
+    if ($script:UIRefs.RefreshScopeStatus) {
+        try { & $script:UIRefs.RefreshScopeStatus $script:UIRefs } catch { }
+    }
 
     # Restore target tenant label
     if ($script:UIRefs.LblRestoreTargetTenant) {

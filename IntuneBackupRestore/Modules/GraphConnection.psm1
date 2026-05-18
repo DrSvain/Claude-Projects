@@ -27,18 +27,33 @@ $script:RequiredScopes = @(
     }
     [PSCustomObject]@{
         Scope       = 'DeviceManagementConfiguration.Read.All'
-        Purpose     = 'Read configuration policies, settings catalog, endpoint security'
-        RequiredFor = 'Backup (all policy workloads)'
+        Purpose     = 'Read configuration policies, settings catalog, endpoint security, admin templates'
+        RequiredFor = 'Backup (most policy workloads)'
     }
     [PSCustomObject]@{
         Scope       = 'DeviceManagementConfiguration.ReadWrite.All'
-        Purpose     = 'Create configuration policies / settings catalog / endpoint security'
-        RequiredFor = 'Restore (all policy workloads)'
+        Purpose     = 'Create / update configuration policies, settings catalog, endpoint security'
+        RequiredFor = 'Restore (most policy workloads)'
     }
     [PSCustomObject]@{
         Scope       = 'DeviceManagementApps.Read.All'
-        Purpose     = 'Read application + compliance-related contexts'
-        RequiredFor = 'Compliance policies'
+        Purpose     = 'Read App Protection / App Configuration / managed app policies'
+        RequiredFor = 'AppProtection, AppConfiguration backup'
+    }
+    [PSCustomObject]@{
+        Scope       = 'DeviceManagementApps.ReadWrite.All'
+        Purpose     = 'Create App Protection / App Configuration policies'
+        RequiredFor = 'AppProtection, AppConfiguration restore'
+    }
+    [PSCustomObject]@{
+        Scope       = 'DeviceManagementServiceConfig.Read.All'
+        Purpose     = 'Read enrollment configurations, Autopilot deployment profiles'
+        RequiredFor = 'Autopilot, EnrollmentConfigurations backup'
+    }
+    [PSCustomObject]@{
+        Scope       = 'DeviceManagementServiceConfig.ReadWrite.All'
+        Purpose     = 'Create enrollment configurations, Autopilot deployment profiles'
+        RequiredFor = 'Autopilot, EnrollmentConfigurations restore'
     }
     [PSCustomObject]@{
         Scope       = 'DeviceManagementManagedDevices.Read.All'
@@ -46,9 +61,19 @@ $script:RequiredScopes = @(
         RequiredFor = 'Backup context'
     }
     [PSCustomObject]@{
+        Scope       = 'DeviceManagementScripts.ReadWrite.All'
+        Purpose     = 'Create / read PowerShell management scripts and proactive remediations'
+        RequiredFor = 'DeviceScripts, ProactiveRemediations restore'
+    }
+    [PSCustomObject]@{
+        Scope       = 'DeviceManagementRBAC.Read.All'
+        Purpose     = 'Read scope tags and role assignments referenced by policies'
+        RequiredFor = 'Backup context (scope tags)'
+    }
+    [PSCustomObject]@{
         Scope       = 'Group.Read.All'
-        Purpose     = 'Resolve group display names for assignment documentation'
-        RequiredFor = 'Assignment export (documentation only)'
+        Purpose     = 'Resolve group display names for assignment export and assignment restore'
+        RequiredFor = 'Assignment export, assignment restore'
     }
 )
 
@@ -262,11 +287,168 @@ function Get-IntuneTenantInformation {
     }
 }
 
+function Get-CurrentScopeStatus {
+    <#
+    .SYNOPSIS
+        Compares granted scopes (from Get-MgContext) with required scopes
+        and returns one row per required scope with Granted = $true/$false.
+
+    .OUTPUTS
+        [PSCustomObject[]]
+            Scope, Purpose, RequiredFor, Granted
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param()
+
+    $granted = @()
+    try {
+        $ctx = Get-MgContext -ErrorAction SilentlyContinue
+        if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes) }
+    }
+    catch { }
+
+    $rows = foreach ($req in $script:RequiredScopes) {
+        [PSCustomObject]@{
+            Scope       = $req.Scope
+            Purpose     = $req.Purpose
+            RequiredFor = $req.RequiredFor
+            Granted     = $granted -contains $req.Scope
+        }
+    }
+    return $rows
+}
+
+function Request-MissingScopes {
+    <#
+    .SYNOPSIS
+        Re-runs Connect-MgGraph with the existing TenantId but adds any missing
+        scopes to the consent prompt. Intended to be called from the Connection
+        tab "Refresh / Request scopes" button.
+
+    .OUTPUTS
+        [hashtable] Same shape as Connect-IntuneTenant.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param()
+
+    $ctx = Get-MgContext -ErrorAction SilentlyContinue
+    if (-not $ctx) {
+        throw 'Not currently connected. Use Connect first.'
+    }
+
+    $missing = (Get-CurrentScopeStatus | Where-Object { -not $_.Granted }).Scope
+    if (-not $missing -or $missing.Count -eq 0) {
+        Write-LogMessage -Level INFO -Message 'All required scopes are already granted.'
+        return @{
+            TenantDisplayName = $null
+            TenantId          = $ctx.TenantId
+            ConnectedUser     = $ctx.Account
+            ConnectionTime    = Get-Date
+            Scopes            = @($ctx.Scopes)
+        }
+    }
+
+    Write-LogMessage -Level INFO -Message "Requesting consent for missing scope(s): $($missing -join ', ')"
+
+    # Re-consent against the same tenant; Connect-MgGraph merges scopes into
+    # the resulting access token. Must reuse existing TenantId to avoid a
+    # tenant switch.
+    Connect-IntuneTenant -TenantId $ctx.TenantId
+}
+
+function Get-AvailableTenants {
+    <#
+    .SYNOPSIS
+        Best-effort list of tenants accessible to the signed-in user.
+
+    .DESCRIPTION
+        Microsoft Graph does NOT expose all tenants a delegated admin can
+        access from a single endpoint. We try the closest available calls:
+          1. /me/joinedTeams – returns home tenant only.
+          2. /organization   – returns the *current* tenant.
+        For multi-tenant admins, the GUI also offers a free-text TenantId
+        field. The returned list always includes the current tenant.
+
+    .OUTPUTS
+        [hashtable[]]  TenantId, DisplayName, IsCurrent
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable[]])]
+    param()
+
+    $list = [System.Collections.Generic.List[hashtable]]::new()
+
+    try {
+        $ctx = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $ctx) {
+            return $list.ToArray()
+        }
+
+        $currentTid = $ctx.TenantId
+        $currentName = 'Current tenant'
+
+        try {
+            $org = Invoke-MgGraphRequest `
+                -Method GET `
+                -Uri    'https://graph.microsoft.com/v1.0/organization?$select=id,displayName' `
+                -OutputType PSObject `
+                -ErrorAction Stop
+            if ($org.value -and $org.value.Count -gt 0) {
+                $currentName = $org.value[0].displayName
+                $currentTid  = $org.value[0].id
+            }
+        }
+        catch { }
+
+        $list.Add(@{
+            TenantId    = $currentTid
+            DisplayName = $currentName
+            IsCurrent   = $true
+        })
+
+        # The /me?$expand=memberOf trick can occasionally surface other
+        # tenants for guest users, but it is not reliable. We deliberately
+        # do NOT auto-discover other tenants because the result depends on
+        # the licensed subscription model and would mislead the operator.
+    }
+    catch {
+        Write-LogMessage -Level DEBUG -Message "Get-AvailableTenants: $($_.Exception.Message)"
+    }
+
+    return $list.ToArray()
+}
+
+function Switch-IntuneTenant {
+    <#
+    .SYNOPSIS
+        Disconnects the current Graph session and reconnects to the requested
+        tenant using the same scope list.
+
+    .OUTPUTS
+        Same shape as Connect-IntuneTenant.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string]$TenantId
+    )
+
+    Write-LogMessage -Level INFO -Message "Switching tenant: $TenantId"
+    try { Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null } catch { }
+    return Connect-IntuneTenant -TenantId $TenantId
+}
+
 #endregion
 
 Export-ModuleMember -Function `
     Get-RequiredGraphScopes, `
+    Get-CurrentScopeStatus, `
+    Request-MissingScopes, `
     Connect-IntuneTenant, `
     Disconnect-IntuneTenant, `
     Test-IntuneConnection, `
-    Get-IntuneTenantInformation
+    Get-IntuneTenantInformation, `
+    Get-AvailableTenants, `
+    Switch-IntuneTenant

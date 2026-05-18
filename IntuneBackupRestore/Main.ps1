@@ -59,10 +59,28 @@ if (Test-Path $ConfigFile) {
 }
 
 $defaults = @{
-    BackupRootPath    = [System.IO.Path]::Combine($env:USERPROFILE, 'IntuneBackups')
-    WriteChecksums    = $false
-    ConfirmRestore    = $true
-    ExportAssignments = $true
+    BackupRootPath              = [System.IO.Path]::Combine($env:USERPROFILE, 'IntuneBackups')
+    BackupFolderNamingPattern   = '{tenant}_{tenantId}/{timestamp}'
+    WriteChecksums              = $false
+    ConfirmRestore              = $true
+    ExportAssignments           = $true
+    RestoreAssignmentsByDefault = $false
+    DryRunByDefault             = $false
+    ConflictMode                = 'Skip'
+    UseBetaWherePossible        = $false
+    EndpointVersions            = @{
+        CompliancePolicies       = 'v1.0'
+        ConfigProfiles           = 'v1.0'
+        SettingsCatalog          = 'v1.0'
+        EndpointSecurity         = 'v1.0'
+        DeviceScripts            = 'v1.0'
+        Autopilot                = 'v1.0'
+        EnrollmentConfigurations = 'v1.0'
+        AppProtection            = 'v1.0'
+        AppConfiguration         = 'v1.0'
+        ProactiveRemediations    = 'beta'
+        AdministrativeTemplates  = 'beta'
+    }
     LogLevel          = 'INFO'
     LogToFile         = $true
     MaxRetries        = 3
@@ -83,11 +101,18 @@ $moduleOrder = @(
     'Modules\Helpers.psm1'
     'Modules\Prerequisites.psm1'
     'Modules\GraphConnection.psm1'
+    'Modules\AssignmentEngine.psm1'
     'Modules\Workloads\CompliancePolicies.psm1'
     'Modules\Workloads\ConfigProfiles.psm1'
     'Modules\Workloads\SettingsCatalog.psm1'
     'Modules\Workloads\EndpointSecurity.psm1'
     'Modules\Workloads\DeviceScripts.psm1'
+    'Modules\Workloads\Autopilot.psm1'
+    'Modules\Workloads\EnrollmentConfigurations.psm1'
+    'Modules\Workloads\AppProtection.psm1'
+    'Modules\Workloads\AppConfiguration.psm1'
+    'Modules\Workloads\ProactiveRemediations.psm1'
+    'Modules\Workloads\AdministrativeTemplates.psm1'
     'Modules\BackupEngine.psm1'
     'Modules\RestoreEngine.psm1'
 )
@@ -128,6 +153,16 @@ try {
     exit 1
 }
 
+# Wire endpoint version preferences into Helpers (Get-GraphRoot consults this).
+try {
+    Set-GraphEndpointConfig `
+        -UseBetaWherePossible ([bool]$Config['UseBetaWherePossible']) `
+        -EndpointVersions     ([hashtable]$Config['EndpointVersions'])
+    Write-Host '[Startup] Graph endpoint config applied.' -ForegroundColor Cyan
+} catch {
+    Write-Host "[Startup] WARNING: Could not apply Graph endpoint config: $_" -ForegroundColor Yellow
+}
+
 # ════════════════════════════════════════════════════════════════════════
 # 7. Global state
 # ════════════════════════════════════════════════════════════════════════
@@ -135,7 +170,7 @@ $GlobalState = [System.Collections.Hashtable]::Synchronized(@{
     # App identity
     AppRoot            = $AppRoot
     AppName            = 'Intune Backup & Restore Tool'
-    AppVersion         = '1.0.0'
+    AppVersion         = '1.1.0'
     Config             = $Config
     ConfigFile         = $ConfigFile
 

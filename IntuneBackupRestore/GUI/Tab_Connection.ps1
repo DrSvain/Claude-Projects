@@ -73,15 +73,20 @@ function Initialize-TabConnection {
     }
 
     # ── Required scopes group ─────────────────────────────────────────────
-    $grpScopes = _New-GroupBox -Text 'Required Microsoft Graph Permissions' -Top 322 -Left 8 -Width 980 -Height 200
+    $grpScopes = _New-GroupBox -Text 'Microsoft Graph Permissions (granted vs required)' -Top 322 -Left 8 -Width 980 -Height 240
 
-    $lblScopeInfo = _New-Label -Text 'The following delegated permissions are requested during authentication:' `
-                               -Top 22 -Left 10 -Width 940 -Height 20
+    $lblScopeInfo = _New-Label -Text 'Granted scopes are checked against required scopes below. Use "Request missing scopes" to step-up consent.' `
+                               -Top 22 -Left 10 -Width 800 -Height 20
     $lblScopeInfo.Font = [System.Drawing.Font]::new('Segoe UI', 9)
 
+    $btnRequestScopes = _New-Button -Text 'Request missing scopes' -Top 18 -Left 640 -Width 220 -Color ([System.Drawing.Color]::FromArgb(0,120,212))
+    $btnRefreshScopes = _New-Button -Text 'Refresh' -Top 18 -Left 870 -Width 95 -Color ([System.Drawing.Color]::FromArgb(100,100,100))
+    # Disable until connected
+    $btnRequestScopes.Enabled = $false
+
     $dgScopes = New-Object System.Windows.Forms.DataGridView
-    $dgScopes.Location                  = [System.Drawing.Point]::new(10, 46)
-    $dgScopes.Size                      = [System.Drawing.Size]::new(955, 140)
+    $dgScopes.Location                  = [System.Drawing.Point]::new(10, 50)
+    $dgScopes.Size                      = [System.Drawing.Size]::new(955, 180)
     $dgScopes.ReadOnly                  = $true
     $dgScopes.AllowUserToAddRows        = $false
     $dgScopes.AllowUserToDeleteRows     = $false
@@ -97,20 +102,93 @@ function Initialize-TabConnection {
     $dgScopes.Columns.Add('Scope',       'Scope')       | Out-Null
     $dgScopes.Columns.Add('Purpose',     'Purpose')     | Out-Null
     $dgScopes.Columns.Add('RequiredFor', 'Required For')| Out-Null
-    $dgScopes.Columns['Scope'].FillWeight       = 30
-    $dgScopes.Columns['Purpose'].FillWeight     = 45
-    $dgScopes.Columns['RequiredFor'].FillWeight = 25
+    $dgScopes.Columns.Add('Status',      'Status')      | Out-Null
+    $dgScopes.Columns['Scope'].FillWeight       = 26
+    $dgScopes.Columns['Purpose'].FillWeight     = 38
+    $dgScopes.Columns['RequiredFor'].FillWeight = 22
+    $dgScopes.Columns['Status'].FillWeight      = 14
 
-    # Populate scopes
-    foreach ($s in (Get-RequiredGraphScopes)) {
-        $dgScopes.Rows.Add($s.Scope, $s.Purpose, $s.RequiredFor) | Out-Null
+    # Register the scope grid + buttons in UIRefs BEFORE building event
+    # handlers so that the handlers can reach them through $UIRefs (which the
+    # ScriptBlock captures as a parameter). Local variables like $dgScopes do
+    # NOT survive past Initialize-TabConnection's return under StrictMode, so
+    # closures must go through $UIRefs.
+    $UIRefs.ScopeGrid          = $dgScopes
+    $UIRefs.BtnRequestScopes   = $btnRequestScopes
+    $UIRefs.BtnRefreshScopes   = $btnRefreshScopes
+
+    # Refresh function — populates rows with current Granted/Missing state.
+    # Captures $UIRefs only; everything it needs lives there.
+    $refreshScopeGrid = {
+        param($Refs)
+        $dg = $Refs.ScopeGrid
+        if (-not $dg) { return }
+        $dg.Rows.Clear()
+        try {
+            $rows = Get-CurrentScopeStatus
+        }
+        catch {
+            # Not connected yet — fall back to required-only list with Missing.
+            $rows = (Get-RequiredGraphScopes) | ForEach-Object {
+                [PSCustomObject]@{
+                    Scope=$_.Scope; Purpose=$_.Purpose; RequiredFor=$_.RequiredFor; Granted=$false
+                }
+            }
+        }
+        foreach ($r in $rows) {
+            $statusText = if ($r.Granted) { 'Granted' } else { 'Missing' }
+            $idx = $dg.Rows.Add($r.Scope, $r.Purpose, $r.RequiredFor, $statusText)
+            $row = $dg.Rows[$idx]
+            if ($r.Granted) {
+                $row.Cells['Status'].Style.ForeColor = [System.Drawing.Color]::DarkGreen
+                $row.Cells['Status'].Style.Font = [System.Drawing.Font]::new('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+            }
+            else {
+                $row.Cells['Status'].Style.ForeColor = [System.Drawing.Color]::DarkRed
+                $row.Cells['Status'].Style.Font = [System.Drawing.Font]::new('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+            }
+        }
     }
+    # Expose refresh callback so the timer + button handlers can call it.
+    # The scriptblock takes $Refs as a parameter so it never relies on
+    # captured locals (which would not survive StrictMode across handler
+    # invocations).
+    $UIRefs.RefreshScopeStatus = $refreshScopeGrid
 
-    $grpScopes.Controls.AddRange(@($lblScopeInfo, $dgScopes))
+    # Initial population.
+    & $refreshScopeGrid $UIRefs
+
+    $btnRefreshScopes.Add_Click({
+        & $UIRefs.RefreshScopeStatus $UIRefs
+    })
+
+    $btnRequestScopes.Add_Click({
+        $btn = $UIRefs.BtnRequestScopes
+        $btn.Enabled = $false
+        $btn.Text    = 'Requesting...'
+        try {
+            Request-MissingScopes | Out-Null
+            & $UIRefs.RefreshScopeStatus $UIRefs
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Could not refresh scopes: $($_.Exception.Message)",
+                'Scope refresh',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        }
+        finally {
+            $btn.Text    = 'Request missing scopes'
+            $btn.Enabled = ($GlobalState.IsConnected -eq $true)
+        }
+    })
+
+    $grpScopes.Controls.AddRange(@($lblScopeInfo, $btnRefreshScopes, $btnRequestScopes, $dgScopes))
 
     # ── Register UIRefs ───────────────────────────────────────────────────
     $UIRefs.BtnConnect    = $btnConnect
     $UIRefs.BtnDisconnect = $btnDisconnect
+    $UIRefs.BtnSwitchTenant = $btnSwitch
 
     # ── Event Handlers ────────────────────────────────────────────────────
 

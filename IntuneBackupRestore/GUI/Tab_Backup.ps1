@@ -43,30 +43,49 @@ function Initialize-TabBackup {
     $grpPath.Controls.AddRange(@($txtPath, $btnBrowse))
 
     # ── Workloads ─────────────────────────────────────────────────────────
-    $grpWL = _New-GBB -Text 'Workloads to Back Up' -Top 84 -Left 8 -Width 980 -Height 68
+    # 11 categories: laid out 4 per row; height auto-grows accordingly.
+    $workloadDefs = @(Get-IntuneBackupCategories)
 
-    $workloadDefs = @(
-        @{Key='CompliancePolicies'; Label='Compliance Policies';        Left=10  }
-        @{Key='ConfigProfiles';     Label='Device Config Profiles';     Left=210 }
-        @{Key='SettingsCatalog';    Label='Settings Catalog';           Left=420 }
-        @{Key='EndpointSecurity';   Label='Endpoint Security';          Left=610 }
-        @{Key='DeviceScripts';      Label='Device Mgmt Scripts';        Left=790 }
-    )
+    $cols = 4
+    $rows = [Math]::Ceiling($workloadDefs.Count / $cols)
+    $rowHeight = 26
+    $grpHeight = 36 + ($rows * $rowHeight) + 30   # header + rows + Select All row
+
+    $grpWL = _New-GBB -Text 'Workloads to Back Up' -Top 84 -Left 8 -Width 980 -Height $grpHeight
+
+    # Select all / none toolbar
+    $btnAll  = _New-BtnB -Text 'Select All'   -Top 22 -Left 10  -Width 100 -Color ([System.Drawing.Color]::FromArgb(100,100,100))
+    $btnNone = _New-BtnB -Text 'Deselect All' -Top 22 -Left 116 -Width 110 -Color ([System.Drawing.Color]::FromArgb(100,100,100))
+    $grpWL.Controls.AddRange(@($btnAll, $btnNone))
 
     $chkBoxes = @{}
-    foreach ($wl in $workloadDefs) {
+    $colWidth = 240
+    $startTop = 60
+    for ($i = 0; $i -lt $workloadDefs.Count; $i++) {
+        $wl  = $workloadDefs[$i]
+        $col = $i % $cols
+        $row = [int][Math]::Floor($i / $cols)
+
         $chk = New-Object System.Windows.Forms.CheckBox
         $chk.Text     = $wl.Label
         $chk.Checked  = $true
-        $chk.Location = [System.Drawing.Point]::new($wl.Left, 28)
+        $chk.Location = [System.Drawing.Point]::new(10 + ($col * $colWidth), $startTop + ($row * $rowHeight))
         $chk.AutoSize = $true
         $chk.Font     = [System.Drawing.Font]::new('Segoe UI', 9)
         $chkBoxes[$wl.Key] = $chk
         $grpWL.Controls.Add($chk)
     }
 
+    $btnAll.Add_Click({
+        foreach ($key in $chkBoxes.Keys) { $chkBoxes[$key].Checked = $true }
+    })
+    $btnNone.Add_Click({
+        foreach ($key in $chkBoxes.Keys) { $chkBoxes[$key].Checked = $false }
+    })
+
     # ── Options ───────────────────────────────────────────────────────────
-    $grpOpt = _New-GBB -Text 'Options' -Top 162 -Left 8 -Width 980 -Height 56
+    $optsTop = 84 + $grpHeight + 8
+    $grpOpt = _New-GBB -Text 'Options' -Top $optsTop -Left 8 -Width 980 -Height 56
 
     $chkAssignments = New-Object System.Windows.Forms.CheckBox
     $chkAssignments.Text     = 'Export assignment data (documentation only, not restored)'
@@ -85,7 +104,8 @@ function Initialize-TabBackup {
     $grpOpt.Controls.AddRange(@($chkAssignments, $chkChecksums))
 
     # ── Actions + Progress ────────────────────────────────────────────────
-    $grpAction = _New-GBB -Text 'Backup Actions' -Top 228 -Left 8 -Width 980 -Height 86
+    $actionTop = $optsTop + 64
+    $grpAction = _New-GBB -Text 'Backup Actions' -Top $actionTop -Left 8 -Width 980 -Height 86
 
     $btnStart = _New-BtnB -Text '▶  Start Backup' -Top 22 -Left 10 -Width 170 `
                           -Color ([System.Drawing.Color]::FromArgb(0,153,76))
@@ -114,7 +134,8 @@ function Initialize-TabBackup {
     $UIRefs.BackupStatusLabel = $lblStatus
 
     # ── Recent Backups ────────────────────────────────────────────────────
-    $grpRecent = _New-GBB -Text 'Recent Backups' -Top 324 -Left 8 -Width 980 -Height 230
+    $recentTop = $actionTop + 94
+    $grpRecent = _New-GBB -Text 'Recent Backups' -Top $recentTop -Left 8 -Width 980 -Height 230
 
     $btnRefresh = _New-BtnB -Text '↺ Refresh' -Top 22 -Left 10 -Width 100 `
                             -Color ([System.Drawing.Color]::FromArgb(100,100,100))
@@ -223,25 +244,33 @@ function Initialize-TabBackup {
         $pb.Value         = 0
         $lblStatus.Text   = 'Starting...'
 
+        $namingPattern = if ($GlobalState.Config -and $GlobalState.Config['BackupFolderNamingPattern']) {
+            [string]$GlobalState.Config['BackupFolderNamingPattern']
+        } else {
+            '{tenant}_{tenantId}/{timestamp}'
+        }
+
         $backupScript = {
             param($GlobalState, $ExtraArgs)
             $sel     = $ExtraArgs[0]
             $inclAss = $ExtraArgs[1]
             $chkSums = $ExtraArgs[2]
             $retries = $ExtraArgs[3]
+            $pattern = $ExtraArgs[4]
 
             Start-IntuneBackup `
                 -GlobalState        $GlobalState `
                 -WorkloadSelection  $sel `
                 -IncludeAssignments $inclAss `
                 -ComputeChecksums   $chkSums `
-                -MaxRetries         $retries
+                -MaxRetries         $retries `
+                -NamingPattern      $pattern
         }
 
         Start-BackgroundOperation `
             -ScriptBlock    $backupScript `
             -OperationType  'Backup' `
-            -AdditionalArgs @($selection, $includeAssignments, $computeChecksums, $maxRetries)
+            -AdditionalArgs @($selection, $includeAssignments, $computeChecksums, $maxRetries, $namingPattern)
 
         # Refresh list after a short delay once the op ends
         # (detected by the timer resetting BtnStartBackup)
