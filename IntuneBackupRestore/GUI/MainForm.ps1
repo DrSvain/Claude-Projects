@@ -238,12 +238,23 @@ function Start-MainForm {
             $page.Controls.Add($lbl)
         }
 
-        # Treat the TabPage as a regular Panel: dock-fill it inside the
-        # content area, show only the currently-selected one.
-        $page.Dock    = 'Fill'
-        $page.Visible = $false
-        $contentPanel.Controls.Add($page)
-        $script:TabPages[$t.Name] = $page
+        # TabPage instances can only live inside a TabControl. Move their
+        # child controls into a plain Panel so we can host them ourselves.
+        $hostPanel = New-Object System.Windows.Forms.Panel
+        $hostPanel.Dock      = 'Fill'
+        $hostPanel.Visible   = $false
+        $hostPanel.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+        $hostPanel.Padding   = [System.Windows.Forms.Padding]::new(10)
+
+        # Snapshot first because removing controls mutates the collection
+        $children = @($page.Controls | ForEach-Object { $_ })
+        foreach ($child in $children) {
+            $page.Controls.Remove($child)
+            $hostPanel.Controls.Add($child)
+        }
+
+        $contentPanel.Controls.Add($hostPanel)
+        $script:TabPages[$t.Name] = $hostPanel
 
         # Build the nav button for this tab
         $btn           = New-Object System.Windows.Forms.Button
