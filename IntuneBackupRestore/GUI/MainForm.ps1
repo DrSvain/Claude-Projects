@@ -32,6 +32,11 @@ $script:ScriptRoot   = $null
 # would throw on a first-time read of an uninitialized $script: variable.
 $script:LastIsConnected = $false
 
+# Custom tab navigation registries (filled inside Start-MainForm). Must be
+# initialised here so Show-Tab can read them safely under Set-StrictMode.
+$script:NavButtons = @{}
+$script:TabPages   = @{}
+
 # UI control references used by the timer and background-op helpers
 $script:UIRefs = @{
     Form                = $null
@@ -158,25 +163,42 @@ function Start-MainForm {
     $script:UIRefs.StatusLabel      = $statusLeft
     $script:UIRefs.StatusRightLabel = $statusRight
 
-    # ── TabControl ────────────────────────────────────────────────────────
-    # Appearance = FlatButtons forces button-style tab rendering that stays
-    # visible even when EnableVisualStyles paints the standard tab look as a
-    # very thin/transparent strip (which is what hid the tab strip on some
-    # Windows 10 builds in earlier feedback).
-    $tabCtrl = New-Object System.Windows.Forms.TabControl
-    $tabCtrl.Dock          = 'Fill'
-    $tabCtrl.Font          = [System.Drawing.Font]::new('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-    $tabCtrl.Padding       = [System.Drawing.Point]::new(16, 8)
-    $tabCtrl.SizeMode      = 'Fixed'
-    $tabCtrl.ItemSize      = [System.Drawing.Size]::new(170, 34)
-    $tabCtrl.Appearance    = 'FlatButtons'
-    $tabCtrl.Alignment     = 'Top'
+    # ── Navigation strip + content host ─────────────────────────────────
+    # We do NOT use System.Windows.Forms.TabControl: on some Windows 10/11
+    # theme + DPI combinations its tab strip renders almost transparently
+    # and the user has no way to switch tabs. We replace it with an
+    # explicit horizontal nav strip of toggle buttons + a Fill content
+    # panel that shows one tab at a time. This gives us full control over
+    # appearance.
 
-    $script:UIRefs.TabControl = $tabCtrl
+    # Container that wraps the nav strip and the content area so they
+    # together fill the area between header and statusBar.
+    $tabHost = New-Object System.Windows.Forms.Panel
+    $tabHost.Dock      = 'Fill'
+    $tabHost.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+
+    $navStrip = New-Object System.Windows.Forms.Panel
+    $navStrip.Dock      = 'Top'
+    $navStrip.Height    = 42
+    $navStrip.BackColor = [System.Drawing.Color]::FromArgb(225, 232, 240)
+
+    $contentPanel = New-Object System.Windows.Forms.Panel
+    $contentPanel.Dock      = 'Fill'
+    $contentPanel.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+
+    # contentPanel must be added BEFORE navStrip in WinForms so Fill claims
+    # the remaining space AFTER navStrip docks Top. WinForms processes
+    # docked siblings in REVERSE z-order: last added = processed first.
+    $tabHost.Controls.Add($contentPanel)
+    $tabHost.Controls.Add($navStrip)
+
+    $script:UIRefs.TabHost     = $tabHost
+    $script:UIRefs.NavStrip    = $navStrip
+    $script:UIRefs.ContentPanel = $contentPanel
 
     # Build each tab. Wrap every Initialize-Tab* call so that a failure in
-    # one tab still lets the other tabs load — otherwise the user only sees
-    # a half-rendered form with no tab strip and no way to debug.
+    # one tab still lets the other tabs load — otherwise the user only
+    # sees a half-rendered form with no tab strip and no way to debug.
     $tabsToBuild = @(
         @{ Name = 'Connection';    Init = { Initialize-TabConnection    -UIRefs $script:UIRefs -GlobalState $GlobalState } }
         @{ Name = 'Prerequisites'; Init = { Initialize-TabPrerequisites -UIRefs $script:UIRefs -GlobalState $GlobalState } }
@@ -186,15 +208,18 @@ function Start-MainForm {
         @{ Name = 'Settings';      Init = { Initialize-TabSettings      -UIRefs $script:UIRefs -GlobalState $GlobalState -AppConfig $AppConfig -LogFilePath $LogFilePath } }
     )
 
+    $script:NavButtons = @{}
+    $script:TabPages   = @{}
+
+    $btnLeft = 6
     foreach ($t in $tabsToBuild) {
+        $page = $null
         try {
             $page = & $t.Init
-            if ($page -is [System.Windows.Forms.TabPage]) {
-                $tabCtrl.TabPages.Add($page) | Out-Null
-                Write-Host "[Startup] Tab loaded: $($t.Name)" -ForegroundColor Green
-            } else {
+            if (-not ($page -is [System.Windows.Forms.TabPage])) {
                 throw "Initialize-Tab$($t.Name) did not return a TabPage."
             }
+            Write-Host "[Startup] Tab loaded: $($t.Name)" -ForegroundColor Green
         }
         catch {
             $errMsg = "Tab '$($t.Name)' failed to initialize: $($_.Exception.Message)"
@@ -202,23 +227,53 @@ function Start-MainForm {
             Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
             try { Write-LogMessage -Level ERROR -Message $errMsg -ErrorRecord $_ } catch { }
 
-            # Insert a placeholder TabPage so the user can still see which tab
-            # broke and read the exception inside the GUI.
-            $placeholder = New-Object System.Windows.Forms.TabPage
-            $placeholder.Text = "$($t.Name) (failed)"
-            $lbl = New-Object System.Windows.Forms.Label
+            $page = New-Object System.Windows.Forms.TabPage
+            $lbl  = New-Object System.Windows.Forms.Label
             $lbl.Text      = "Tab '$($t.Name)' failed to initialize.`r`n`r`n$($_.Exception.Message)`r`n`r`n$($_.ScriptStackTrace)"
             $lbl.Dock      = 'Fill'
             $lbl.Font      = [System.Drawing.Font]::new('Consolas', 9)
             $lbl.ForeColor = [System.Drawing.Color]::DarkRed
             $lbl.AutoSize  = $false
             $lbl.Padding   = [System.Windows.Forms.Padding]::new(12)
-            $placeholder.Controls.Add($lbl)
-            $tabCtrl.TabPages.Add($placeholder) | Out-Null
+            $page.Controls.Add($lbl)
         }
+
+        # Treat the TabPage as a regular Panel: dock-fill it inside the
+        # content area, show only the currently-selected one.
+        $page.Dock    = 'Fill'
+        $page.Visible = $false
+        $contentPanel.Controls.Add($page)
+        $script:TabPages[$t.Name] = $page
+
+        # Build the nav button for this tab
+        $btn           = New-Object System.Windows.Forms.Button
+        $btn.Text      = $t.Name
+        $btn.Tag       = $t.Name
+        $btn.Location  = [System.Drawing.Point]::new($btnLeft, 5)
+        $btn.Size      = [System.Drawing.Size]::new(150, 32)
+        $btn.Font      = [System.Drawing.Font]::new('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+        $btn.FlatStyle = 'Flat'
+        $btn.BackColor = [System.Drawing.Color]::FromArgb(225, 232, 240)
+        $btn.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+        $btn.FlatAppearance.BorderSize         = 0
+        $btn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(200, 215, 230)
+        $btn.Cursor    = [System.Windows.Forms.Cursors]::Hand
+        $btn.Add_Click({
+            param($sender, $e)
+            Show-Tab -Name $sender.Tag
+        })
+        $navStrip.Controls.Add($btn)
+        $script:NavButtons[$t.Name] = $btn
+
+        $btnLeft += 156
     }
 
-    $form.Controls.Add($tabCtrl)
+    $tabHost.Controls.SetChildIndex($navStrip, 0)   # Ensure navStrip stays on top
+
+    $form.Controls.Add($tabHost)
+
+    # Show the first tab by default
+    Show-Tab -Name 'Connection'
 
     # ── 250 ms UI refresh Timer ───────────────────────────────────────────
     $timer = New-Object System.Windows.Forms.Timer
@@ -542,6 +597,36 @@ function Update-StatusBar {
     if ($script:UIRefs.StatusLabel)      { $script:UIRefs.StatusLabel.Text      = $Text      }
     if ($script:UIRefs.StatusRightLabel -and $RightText) {
         $script:UIRefs.StatusRightLabel.Text = $RightText
+    }
+}
+
+function Show-Tab {
+    <#
+    .SYNOPSIS
+        Hides all tab pages, shows the named one, and highlights the
+        matching nav button.
+    #>
+    param([Parameter(Mandatory)][string]$Name)
+
+    if (-not $script:TabPages -or -not $script:TabPages.ContainsKey($Name)) {
+        return
+    }
+
+    foreach ($key in $script:TabPages.Keys) {
+        $script:TabPages[$key].Visible = ($key -eq $Name)
+    }
+
+    if ($script:NavButtons) {
+        foreach ($key in $script:NavButtons.Keys) {
+            $btn = $script:NavButtons[$key]
+            if ($key -eq $Name) {
+                $btn.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 212)
+                $btn.ForeColor = [System.Drawing.Color]::White
+            } else {
+                $btn.BackColor = [System.Drawing.Color]::FromArgb(225, 232, 240)
+                $btn.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+            }
+        }
     }
 }
 
