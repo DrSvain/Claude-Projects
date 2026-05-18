@@ -21,7 +21,7 @@ Set-StrictMode -Version Latest
 # IMPORTANT: This file is dot-sourced into Main.ps1, so `$script:` refers to
 # Main.ps1's scope. Do NOT initialize $script:GlobalState here — it would wipe
 # the $GlobalState that Main.ps1 created. It is set inside Start-MainForm.
-$script:AppVersion   = '1.0.0'
+$script:AppVersion   = '1.1.0'
 $script:AppName      = 'Intune Backup & Restore Tool'
 $script:LogFilePath  = $null
 $script:ScriptRoot   = $null
@@ -160,19 +160,59 @@ function Start-MainForm {
 
     # ── TabControl ────────────────────────────────────────────────────────
     $tabCtrl = New-Object System.Windows.Forms.TabControl
-    $tabCtrl.Dock     = 'Fill'
-    $tabCtrl.Font     = [System.Drawing.Font]::new('Segoe UI', 9)
-    $tabCtrl.Padding  = [System.Drawing.Point]::new(10, 4)
+    $tabCtrl.Dock          = 'Fill'
+    $tabCtrl.Font          = [System.Drawing.Font]::new('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $tabCtrl.Padding       = [System.Drawing.Point]::new(14, 6)
+    $tabCtrl.SizeMode      = 'Fixed'
+    $tabCtrl.ItemSize      = [System.Drawing.Size]::new(160, 28)
+    $tabCtrl.Appearance    = 'Normal'
+    $tabCtrl.DrawMode      = 'Normal'
 
     $script:UIRefs.TabControl = $tabCtrl
 
-    # Build each tab (functions defined in Tab_*.ps1 files)
-    $tabCtrl.TabPages.Add((Initialize-TabConnection   -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabPrerequisites -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabBackup        -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabRestore       -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabLog           -UIRefs $script:UIRefs -GlobalState $GlobalState))
-    $tabCtrl.TabPages.Add((Initialize-TabSettings      -UIRefs $script:UIRefs -GlobalState $GlobalState -AppConfig $AppConfig -LogFilePath $LogFilePath))
+    # Build each tab. Wrap every Initialize-Tab* call so that a failure in
+    # one tab still lets the other tabs load — otherwise the user only sees
+    # a half-rendered form with no tab strip and no way to debug.
+    $tabsToBuild = @(
+        @{ Name = 'Connection';    Init = { Initialize-TabConnection    -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Prerequisites'; Init = { Initialize-TabPrerequisites -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Backup';        Init = { Initialize-TabBackup        -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Restore';       Init = { Initialize-TabRestore       -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Log';           Init = { Initialize-TabLog           -UIRefs $script:UIRefs -GlobalState $GlobalState } }
+        @{ Name = 'Settings';      Init = { Initialize-TabSettings      -UIRefs $script:UIRefs -GlobalState $GlobalState -AppConfig $AppConfig -LogFilePath $LogFilePath } }
+    )
+
+    foreach ($t in $tabsToBuild) {
+        try {
+            $page = & $t.Init
+            if ($page -is [System.Windows.Forms.TabPage]) {
+                $tabCtrl.TabPages.Add($page) | Out-Null
+                Write-Host "[Startup] Tab loaded: $($t.Name)" -ForegroundColor Green
+            } else {
+                throw "Initialize-Tab$($t.Name) did not return a TabPage."
+            }
+        }
+        catch {
+            $errMsg = "Tab '$($t.Name)' failed to initialize: $($_.Exception.Message)"
+            Write-Host "ERROR: $errMsg" -ForegroundColor Red
+            Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
+            try { Write-LogMessage -Level ERROR -Message $errMsg -ErrorRecord $_ } catch { }
+
+            # Insert a placeholder TabPage so the user can still see which tab
+            # broke and read the exception inside the GUI.
+            $placeholder = New-Object System.Windows.Forms.TabPage
+            $placeholder.Text = "$($t.Name) (failed)"
+            $lbl = New-Object System.Windows.Forms.Label
+            $lbl.Text      = "Tab '$($t.Name)' failed to initialize.`r`n`r`n$($_.Exception.Message)`r`n`r`n$($_.ScriptStackTrace)"
+            $lbl.Dock      = 'Fill'
+            $lbl.Font      = [System.Drawing.Font]::new('Consolas', 9)
+            $lbl.ForeColor = [System.Drawing.Color]::DarkRed
+            $lbl.AutoSize  = $false
+            $lbl.Padding   = [System.Windows.Forms.Padding]::new(12)
+            $placeholder.Controls.Add($lbl)
+            $tabCtrl.TabPages.Add($placeholder) | Out-Null
+        }
+    }
 
     $form.Controls.Add($tabCtrl)
 
