@@ -171,29 +171,16 @@ function Start-MainForm {
     # panel that shows one tab at a time. This gives us full control over
     # appearance.
 
-    # Container that wraps the nav strip and the content area so they
-    # together fill the area between header and statusBar.
-    $tabHost = New-Object System.Windows.Forms.Panel
-    $tabHost.Dock      = 'Fill'
-    $tabHost.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
-
     $navStrip = New-Object System.Windows.Forms.Panel
     $navStrip.Dock      = 'Top'
-    $navStrip.Height    = 42
+    $navStrip.Height    = 46
     $navStrip.BackColor = [System.Drawing.Color]::FromArgb(225, 232, 240)
 
     $contentPanel = New-Object System.Windows.Forms.Panel
     $contentPanel.Dock      = 'Fill'
     $contentPanel.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
 
-    # contentPanel must be added BEFORE navStrip in WinForms so Fill claims
-    # the remaining space AFTER navStrip docks Top. WinForms processes
-    # docked siblings in REVERSE z-order: last added = processed first.
-    $tabHost.Controls.Add($contentPanel)
-    $tabHost.Controls.Add($navStrip)
-
-    $script:UIRefs.TabHost     = $tabHost
-    $script:UIRefs.NavStrip    = $navStrip
+    $script:UIRefs.NavStrip     = $navStrip
     $script:UIRefs.ContentPanel = $contentPanel
 
     # Build each tab. Wrap every Initialize-Tab* call so that a failure in
@@ -279,9 +266,13 @@ function Start-MainForm {
         $btnLeft += 156
     }
 
-    $tabHost.Controls.SetChildIndex($navStrip, 0)   # Ensure navStrip stays on top
-
-    $form.Controls.Add($tabHost)
+    # Add to the form in dock-priority order: Top docks first then Fill
+    # fills what remains. (Form-level $statusBar is already docked Bottom.)
+    # WinForms processes docked siblings in the order they appear in the
+    # parent's Controls collection, so navStrip MUST be added before
+    # contentPanel for Top to claim its space first.
+    $form.Controls.Add($navStrip)
+    $form.Controls.Add($contentPanel)
 
     # Show the first tab by default
     Show-Tab -Name 'Connection'
