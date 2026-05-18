@@ -159,14 +159,18 @@ function Start-MainForm {
     $script:UIRefs.StatusRightLabel = $statusRight
 
     # ── TabControl ────────────────────────────────────────────────────────
+    # Appearance = FlatButtons forces button-style tab rendering that stays
+    # visible even when EnableVisualStyles paints the standard tab look as a
+    # very thin/transparent strip (which is what hid the tab strip on some
+    # Windows 10 builds in earlier feedback).
     $tabCtrl = New-Object System.Windows.Forms.TabControl
     $tabCtrl.Dock          = 'Fill'
-    $tabCtrl.Font          = [System.Drawing.Font]::new('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-    $tabCtrl.Padding       = [System.Drawing.Point]::new(14, 6)
+    $tabCtrl.Font          = [System.Drawing.Font]::new('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+    $tabCtrl.Padding       = [System.Drawing.Point]::new(16, 8)
     $tabCtrl.SizeMode      = 'Fixed'
-    $tabCtrl.ItemSize      = [System.Drawing.Size]::new(160, 28)
-    $tabCtrl.Appearance    = 'Normal'
-    $tabCtrl.DrawMode      = 'Normal'
+    $tabCtrl.ItemSize      = [System.Drawing.Size]::new(170, 34)
+    $tabCtrl.Appearance    = 'FlatButtons'
+    $tabCtrl.Alignment     = 'Top'
 
     $script:UIRefs.TabControl = $tabCtrl
 
@@ -572,9 +576,12 @@ function Update-TenantDisplay {
     if ($script:UIRefs.BtnRequestScopes) { $script:UIRefs.BtnRequestScopes.Enabled = $connected }
     if ($script:UIRefs.BtnSwitchTenant)  { $script:UIRefs.BtnSwitchTenant.Enabled  = $connected }
 
-    # Refresh scope-status grid (Tab_Connection registers this callback)
+    # Refresh scope-status grid (Tab_Connection registers this callback).
+    # The scriptblock takes $UIRefs as an argument; we pass it explicitly so
+    # the callback does not depend on dynamic-scope lookup of locals from the
+    # tab init function (which would fail under StrictMode).
     if ($script:UIRefs.RefreshScopeStatus) {
-        try { & $script:UIRefs.RefreshScopeStatus } catch { }
+        try { & $script:UIRefs.RefreshScopeStatus $script:UIRefs } catch { }
     }
 
     # Restore target tenant label

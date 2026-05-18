@@ -79,8 +79,8 @@ function Initialize-TabConnection {
                                -Top 22 -Left 10 -Width 800 -Height 20
     $lblScopeInfo.Font = [System.Drawing.Font]::new('Segoe UI', 9)
 
-    $btnRefreshScopes = _New-Button -Text 'Refresh' -Top 18 -Left 818 -Width 70 -Color ([System.Drawing.Color]::FromArgb(100,100,100))
-    $btnRequestScopes = _New-Button -Text 'Request missing scopes' -Top 18 -Left 700 -Width 110 -Color ([System.Drawing.Color]::FromArgb(0,120,212))
+    $btnRequestScopes = _New-Button -Text 'Request missing scopes' -Top 18 -Left 640 -Width 220 -Color ([System.Drawing.Color]::FromArgb(0,120,212))
+    $btnRefreshScopes = _New-Button -Text 'Refresh' -Top 18 -Left 870 -Width 95 -Color ([System.Drawing.Color]::FromArgb(100,100,100))
     # Disable until connected
     $btnRequestScopes.Enabled = $false
 
@@ -108,9 +108,22 @@ function Initialize-TabConnection {
     $dgScopes.Columns['RequiredFor'].FillWeight = 22
     $dgScopes.Columns['Status'].FillWeight      = 14
 
+    # Register the scope grid + buttons in UIRefs BEFORE building event
+    # handlers so that the handlers can reach them through $UIRefs (which the
+    # ScriptBlock captures as a parameter). Local variables like $dgScopes do
+    # NOT survive past Initialize-TabConnection's return under StrictMode, so
+    # closures must go through $UIRefs.
+    $UIRefs.ScopeGrid          = $dgScopes
+    $UIRefs.BtnRequestScopes   = $btnRequestScopes
+    $UIRefs.BtnRefreshScopes   = $btnRefreshScopes
+
     # Refresh function — populates rows with current Granted/Missing state.
+    # Captures $UIRefs only; everything it needs lives there.
     $refreshScopeGrid = {
-        $dgScopes.Rows.Clear()
+        param($Refs)
+        $dg = $Refs.ScopeGrid
+        if (-not $dg) { return }
+        $dg.Rows.Clear()
         try {
             $rows = Get-CurrentScopeStatus
         }
@@ -124,8 +137,8 @@ function Initialize-TabConnection {
         }
         foreach ($r in $rows) {
             $statusText = if ($r.Granted) { 'Granted' } else { 'Missing' }
-            $idx = $dgScopes.Rows.Add($r.Scope, $r.Purpose, $r.RequiredFor, $statusText)
-            $row = $dgScopes.Rows[$idx]
+            $idx = $dg.Rows.Add($r.Scope, $r.Purpose, $r.RequiredFor, $statusText)
+            $row = $dg.Rows[$idx]
             if ($r.Granted) {
                 $row.Cells['Status'].Style.ForeColor = [System.Drawing.Color]::DarkGreen
                 $row.Cells['Status'].Style.Font = [System.Drawing.Font]::new('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
@@ -136,15 +149,26 @@ function Initialize-TabConnection {
             }
         }
     }
-    & $refreshScopeGrid
+    # Expose refresh callback so the timer + button handlers can call it.
+    # The scriptblock takes $Refs as a parameter so it never relies on
+    # captured locals (which would not survive StrictMode across handler
+    # invocations).
+    $UIRefs.RefreshScopeStatus = $refreshScopeGrid
 
-    $btnRefreshScopes.Add_Click({ & $refreshScopeGrid })
+    # Initial population.
+    & $refreshScopeGrid $UIRefs
+
+    $btnRefreshScopes.Add_Click({
+        & $UIRefs.RefreshScopeStatus $UIRefs
+    })
+
     $btnRequestScopes.Add_Click({
-        $btnRequestScopes.Enabled = $false
-        $btnRequestScopes.Text    = 'Requesting...'
+        $btn = $UIRefs.BtnRequestScopes
+        $btn.Enabled = $false
+        $btn.Text    = 'Requesting...'
         try {
             Request-MissingScopes | Out-Null
-            & $refreshScopeGrid
+            & $UIRefs.RefreshScopeStatus $UIRefs
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show(
@@ -154,14 +178,10 @@ function Initialize-TabConnection {
                 [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         }
         finally {
-            $btnRequestScopes.Text = 'Request missing scopes'
-            $btnRequestScopes.Enabled = ($GlobalState.IsConnected -eq $true)
+            $btn.Text    = 'Request missing scopes'
+            $btn.Enabled = ($GlobalState.IsConnected -eq $true)
         }
     })
-
-    # Expose refresh callback so the timer can call it after connect / switch
-    $UIRefs.RefreshScopeStatus = $refreshScopeGrid
-    $UIRefs.BtnRequestScopes   = $btnRequestScopes
 
     $grpScopes.Controls.AddRange(@($lblScopeInfo, $btnRefreshScopes, $btnRequestScopes, $dgScopes))
 
